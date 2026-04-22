@@ -117,6 +117,25 @@ jobs:
                 except Exception as e:
                     print(f"[DC] Error leyendo JSON: {e}")
 
+            def translate_es(text):
+                if not text or len(str(text).strip()) < 5:
+                    return str(text)
+                try:
+                    from deep_translator import GoogleTranslator
+                    result = GoogleTranslator(source='auto', target='es').translate(str(text)[:500])
+                    return result if result else str(text)
+                except Exception:
+                    return str(text)
+
+            def tdesc(en):
+                es = translate_es(en)
+                if es != en:
+                    return (f'<span title="EN: {html.escape(en)}" '
+                            f'style="cursor:help;border-bottom:1px dashed #444">'
+                            f'{html.escape(es)}</span>'
+                            f' <span style="font-size:10px;color:#58a6ff">🌐</span>')
+                return html.escape(en)
+
             def cvss_score(v):
                 return float(v.get("cvssv3", {}).get("baseScore",
                        v.get("cvssv2", {}).get("score", 0)) or 0)
@@ -145,7 +164,7 @@ jobs:
                 score_v3 = v.get("cvssv3", {}).get("baseScore", "")
                 score_v2 = v.get("cvssv2", {}).get("score", "")
                 score   = str(score_v3) if score_v3 else str(score_v2) if score_v2 else "N/A"
-                desc    = html.escape(v.get("description", "")[:180])
+                desc    = tdesc(v.get("description", "")[:180])
                 rows += f"""<tr>
                   <td><span class="badge {css}">{sev}</span></td>
                   <td class="cvss-score">{score}</td>
@@ -288,7 +307,9 @@ jobs:
             with open(html_path, "w", encoding="utf-8") as fh:
                 fh.write(report)
             print(f"[DC Fallback] {total} CVE(s) en {dep_count} dependencia(s) → {html_path}")
-        run: python3 -c "$PYTHON_SCRIPT"
+        run: |
+          pip install deep-translator --quiet 2>/dev/null || true
+          python3 -c "$PYTHON_SCRIPT"
 
       - name: Subir reporte
         if: always()

@@ -80,6 +80,25 @@ jobs:
             counters  = data.get("severity_counters", {})
             total     = data.get("total_counter", 0)
 
+            def translate_es(text):
+                if not text or len(str(text).strip()) < 5:
+                    return str(text)
+                try:
+                    from deep_translator import GoogleTranslator
+                    result = GoogleTranslator(source='auto', target='es').translate(str(text)[:500])
+                    return result if result else str(text)
+                except Exception:
+                    return str(text)
+
+            def tdesc(en):
+                es = translate_es(en)
+                if es != en:
+                    return (f'<span title="EN: {html.escape(en)}" '
+                            f'style="cursor:help;border-bottom:1px dashed #444">'
+                            f'{html.escape(es)}</span>'
+                            f' <span style="font-size:10px;color:#58a6ff">🌐</span>')
+                return html.escape(en)
+
             SEV_CSS = {
                 "CRITICAL": "badge-critical",
                 "HIGH":     "badge-high",
@@ -95,7 +114,7 @@ jobs:
                 qname    = html.escape(q.get("query_name", "N/A"))
                 category = html.escape(q.get("category", "N/A"))
                 platform = html.escape(q.get("platform", "N/A"))
-                desc     = html.escape(q.get("description", "")[:200])
+                desc     = tdesc(q.get("description", "")[:200])
                 files    = q.get("files", [])
                 files_html = "".join(
                     f'<div class="file-path">{html.escape(str(f.get("file_name","?")))}'
@@ -239,7 +258,9 @@ jobs:
             with open(out_path, "w", encoding="utf-8") as fh:
                 fh.write(report)
             print(f"[KICS] {total} hallazgo(s) → {out_path}")
-        run: python3 -c "$PYTHON_SCRIPT"
+        run: |
+          pip install deep-translator --quiet 2>/dev/null || true
+          python3 -c "$PYTHON_SCRIPT"
 
       - name: Subir reporte KICS
         if: always()
@@ -318,6 +339,25 @@ jobs:
             except Exception:
                 pass
 
+            def translate_es(text):
+                if not text or len(str(text).strip()) < 5:
+                    return str(text)
+                try:
+                    from deep_translator import GoogleTranslator
+                    result = GoogleTranslator(source='auto', target='es').translate(str(text)[:500])
+                    return result if result else str(text)
+                except Exception:
+                    return str(text)
+
+            def tdesc(en):
+                es = translate_es(en)
+                if es != en:
+                    return (f'<span title="EN: {html.escape(en)}" '
+                            f'style="cursor:help;border-bottom:1px dashed #444">'
+                            f'{html.escape(es)}</span>'
+                            f' <span style="font-size:10px;color:#58a6ff">🌐</span>')
+                return html.escape(en)
+
             SEV_CSS = {
                 "error":   "badge-critical",
                 "warning": "badge-high",
@@ -336,7 +376,7 @@ jobs:
                 level    = f.get("level", "info").lower()
                 css      = SEV_CSS.get(level, "badge-low")
                 code     = html.escape(str(f.get("code", "?")))
-                msg      = html.escape(str(f.get("message", ""))[:200])
+                msg      = tdesc(str(f.get("message", ""))[:200])
                 file_raw = str(f.get("file", "?"))
                 file_disp = html.escape(file_raw.lstrip("./"))
                 line     = f.get("line", "?")
@@ -470,7 +510,9 @@ jobs:
             with open(out_path, "w", encoding="utf-8") as fh:
                 fh.write(report)
             print(f"[Hadolint] {total} hallazgo(s) → {out_path}")
-        run: python3 -c "$PYTHON_SCRIPT"
+        run: |
+          pip install deep-translator --quiet 2>/dev/null || true
+          python3 -c "$PYTHON_SCRIPT"
 
       - name: Subir reporte Hadolint
         if: always()
@@ -577,6 +619,25 @@ jobs:
             except Exception as e:
                 print(f"[Trivy] Error leyendo JSON: {e}")
 
+            def translate_es(text):
+                if not text or len(str(text).strip()) < 5:
+                    return str(text)
+                try:
+                    from deep_translator import GoogleTranslator
+                    result = GoogleTranslator(source='auto', target='es').translate(str(text)[:500])
+                    return result if result else str(text)
+                except Exception:
+                    return str(text)
+
+            def tdesc(en):
+                es = translate_es(en)
+                if es != en:
+                    return (f'<span title="EN: {html.escape(en)}" '
+                            f'style="cursor:help;border-bottom:1px dashed #444">'
+                            f'{html.escape(es)}</span>'
+                            f' <span style="font-size:10px;color:#58a6ff">🌐</span>')
+                return html.escape(en)
+
             SEV_ORDER = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "UNKNOWN": 4}
             results.sort(key=lambda x: SEV_ORDER.get(x.get("Severity", "UNKNOWN"), 4))
 
@@ -603,7 +664,7 @@ jobs:
                 inst   = html.escape(v.get("InstalledVersion", "?"))
                 fixed  = html.escape(v.get("FixedVersion", "N/A") or "N/A")
                 target = html.escape(v.get("_target", "?"))
-                title  = html.escape(v.get("Title", "")[:100])
+                title  = tdesc(v.get("Title", "")[:100])
                 rows += f"""<tr>
                   <td><span class="badge {css}">{sev}</span></td>
                   <td style="color:#58a6ff;font-size:12px">{vid}</td>
@@ -732,7 +793,9 @@ jobs:
             with open(html_path, "w", encoding="utf-8") as fh:
                 fh.write(report)
             print(f"[Trivy Fallback] {total} CVE(s) → {html_path}")
-        run: python3 -c "$PYTHON_SCRIPT"
+        run: |
+          pip install deep-translator --quiet 2>/dev/null || true
+          python3 -c "$PYTHON_SCRIPT"
 
       - name: Subir reportes Trivy
         if: always()

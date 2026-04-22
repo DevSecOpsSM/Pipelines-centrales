@@ -72,6 +72,25 @@ jobs:
             except Exception:
                 pass
 
+            def translate_es(text):
+                if not text or len(str(text).strip()) < 5:
+                    return str(text)
+                try:
+                    from deep_translator import GoogleTranslator
+                    result = GoogleTranslator(source='auto', target='es').translate(str(text)[:500])
+                    return result if result else str(text)
+                except Exception:
+                    return str(text)
+
+            def tdesc(en):
+                es = translate_es(en)
+                if es != en:
+                    return (f'<span title="EN: {html.escape(en)}" '
+                            f'style="cursor:help;border-bottom:1px dashed #444">'
+                            f'{html.escape(es)}</span>'
+                            f' <span style="font-size:10px;color:#58a6ff">🌐</span>')
+                return html.escape(en)
+
             # Mapeo de severidad Semgrep → nivel visual
             SEV_MAP = {"ERROR": "critical", "WARNING": "high", "INFO": "medium"}
             SEV_LABEL = {"ERROR": "ERROR", "WARNING": "WARNING", "INFO": "INFO"}
@@ -94,7 +113,7 @@ jobs:
                 rule_disp  = html.escape(rule_short)
                 filepath   = html.escape(r.get("path", "?"))
                 line_s     = r.get("start", {}).get("line", "?")
-                msg        = html.escape(r.get("extra", {}).get("message", "")[:200])
+                msg        = tdesc(r.get("extra", {}).get("message", "")[:200])
                 meta       = r.get("extra", {}).get("metadata", {})
                 owasp_ref  = ""
                 if "owasp" in meta:
@@ -244,7 +263,9 @@ jobs:
             with open(out_path, "w", encoding="utf-8") as fh:
                 fh.write(report)
             print(f"[Semgrep] {total} hallazgo(s): ERROR={counts.get('ERROR',0)}, WARNING={counts.get('WARNING',0)}, INFO={counts.get('INFO',0)} → {out_path}")
-        run: python3 -c "$PYTHON_SCRIPT"
+        run: |
+          pip install deep-translator --quiet 2>/dev/null || true
+          python3 -c "$PYTHON_SCRIPT"
 
       - name: Subir reporte
         if: always()
