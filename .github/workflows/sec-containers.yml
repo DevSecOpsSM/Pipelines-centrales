@@ -35,6 +35,7 @@ jobs:
         continue-on-error: true
         run: |
           mkdir -p kics-output
+          # Quitamos el 'tail -5' para poder ver los logs reales si algo falla.
           docker run --rm \
             -v "$PWD:/path" \
             checkmarx/kics:latest \
@@ -45,8 +46,9 @@ jobs:
             --output-name kics-results \
             --ignore-on-exit results \
             --exclude-paths /path/kics-output,/path/.git \
-            2>&1 | tail -5 || true
+            || true
 
+          # Garantizar archivo JSON válido si KICS falló críticamente
           if [ ! -s kics-output/kics-results.json ]; then
             echo '{"kics_version":"unknown","queries":[],"total_counter":0,"severity_counters":{"CRITICAL":0,"HIGH":0,"MEDIUM":0,"LOW":0,"INFO":0}}' \
               > kics-output/kics-results.json

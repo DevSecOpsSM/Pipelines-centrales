@@ -59,6 +59,7 @@ jobs:
             echo "[DC] Sin NVD API Key → usando delay de 6s entre peticiones para evitar rate-limit"
           fi
 
+          # Quitamos el 'tail -20' para no ocultar errores de descarga o escaneo
           docker run --rm \
             -v "$PWD:/src" \
             -v "$PWD/.dc-cache:/usr/share/dependency-check/data" \
@@ -71,8 +72,7 @@ jobs:
             --failOnCVSS 99 \
             --nvdApiDelay 6000 \
             --disableAssembly \
-            $NVD_ARGS \
-            2>&1 | tail -20 || true
+            $NVD_ARGS || true
 
       # Movemos el script de Python a una variable de entorno para evitar problemas de indentación YAML
       - name: Fallback HTML si Dependency-Check no generó reporte
