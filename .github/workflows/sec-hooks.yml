@@ -1,0 +1,213 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# SSDLC · Etapa 0 — Pre-commit Hooks (Kicks)
+# Ejecuta los hooks configurados en .pre-commit-config.yaml del repositorio
+# Si no existe el archivo, genera un reporte informativo con ejemplo mínimo
+# Modo Auditoría: reporta sin bloquear el pipeline
+# ═══════════════════════════════════════════════════════════════════════════
+
+name: Security - Pre-commit Hooks
+
+on:
+  workflow_call:
+
+jobs:
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # JOB · PRE-COMMIT HOOKS (KICKS)
+  # Ejecuta hooks si existe .pre-commit-config.yaml
+  # Genera reporte HTML con el output en ambos casos
+  # ─────────────────────────────────────────────────────────────────────────
+  pre-commit:
+    name: "Pre-commit Hooks — Kicks"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repositorio
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Crear directorio de reportes
+        run: mkdir -p "reports/${{ github.event.repository.name }}"
+
+      - name: Instalar pre-commit
+        run: pip install pre-commit --quiet
+
+      - name: Ejecutar hooks (si existe configuración)
+        id: hooks
+        continue-on-error: true
+        run: |
+          OUT="reports/${{ github.event.repository.name }}/kicks-output.txt"
+
+          if [ -f .pre-commit-config.yaml ]; then
+            echo "has_config=true" >> $GITHUB_OUTPUT
+            echo "=== Pre-commit hooks ejecutados en: ${{ github.event.repository.name }} ===" > "$OUT"
+            echo "Fecha: $(date -u '+%Y-%m-%d %H:%M UTC')" >> "$OUT"
+            echo "" >> "$OUT"
+            pre-commit run --all-files --show-diff-on-failure 2>&1 >> "$OUT" || true
+          else
+            echo "has_config=false" >> $GITHUB_OUTPUT
+            cat > "$OUT" << 'MSGEOF'
+No se encontró .pre-commit-config.yaml en el repositorio.
+
+Para activar esta etapa de seguridad, crea el archivo en la raíz del repositorio.
+
+Ejemplo mínimo recomendado por el equipo de Cybersecurity:
+
+┌─────────────────────────────────────────────────────────────────┐
+│ .pre-commit-config.yaml                                         │
+├─────────────────────────────────────────────────────────────────┤
+│ repos:                                                          │
+│   - repo: https://github.com/pre-commit/pre-commit-hooks       │
+│     rev: v4.6.0                                                 │
+│     hooks:                                                      │
+│       - id: trailing-whitespace                                 │
+│       - id: end-of-file-fixer                                   │
+│       - id: check-yaml                                          │
+│       - id: check-json                                          │
+│       - id: check-added-large-files                             │
+│       - id: detect-private-key                                  │
+│       - id: check-merge-conflict                                │
+│       - id: no-commit-to-branch                                 │
+│         args: [--branch, main, --branch, master]               │
+│                                                                 │
+│   - repo: https://github.com/Yelp/detect-secrets               │
+│     rev: v1.5.0                                                 │
+│     hooks:                                                      │
+│       - id: detect-secrets                                      │
+└─────────────────────────────────────────────────────────────────┘
+
+Documentación: https://pre-commit.com
+MSGEOF
+          fi
+
+      - name: Generar reporte HTML
+        if: always()
+        env:
+          REPO_NAME: ${{ github.event.repository.name }}
+          REPO_FULL: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          REF: ${{ github.ref_name }}
+          HAS_CONFIG: ${{ steps.hooks.outputs.has_config }}
+        run: |
+          python3 << 'PYEOF'
+          import os, html
+          from datetime import datetime
+
+          repo_name  = os.environ['REPO_NAME']
+          repo_full  = os.environ['REPO_FULL']
+          sha        = os.environ['SHA'][:7]
+          ref        = os.environ['REF']
+          has_config = os.environ.get('HAS_CONFIG', 'false') == 'true'
+          fecha      = datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')
+          out_dir    = f"reports/{repo_name}"
+
+          output = ""
+          out_txt = os.path.join(out_dir, "kicks-output.txt")
+          if os.path.exists(out_txt):
+              output = open(out_txt, encoding="utf-8").read()
+
+          # Detectar si los hooks pasaron o fallaron
+          if has_config:
+              passed = "Failed" not in output and "error" not in output.lower()
+              status_class = "pass" if passed else "fail"
+              status_label = "Hooks ejecutados correctamente" if passed else "Hooks con fallos detectados"
+              badge_color  = "#3fb950" if passed else "#f85149"
+              badge_bg     = "#0d3321" if passed else "#3d1114"
+              badge_border = "#238636" if passed else "#da3633"
+          else:
+              status_class = "warn"
+              status_label = "Sin configuración de pre-commit"
+              badge_color  = "#d29922"
+              badge_bg     = "#3d2e08"
+              badge_border = "#9e6a03"
+
+          escaped_output = html.escape(output)
+
+          info_block = ""
+          if not has_config:
+              info_block = """
+              <div class="info-box">
+                <strong>ℹ️ Acción recomendada:</strong> Crea el archivo
+                <code>.pre-commit-config.yaml</code> en la raíz del repositorio
+                para activar este control de seguridad pre-commit.
+                El ejemplo mínimo está incluido en el output a continuación.
+              </div>"""
+
+          report = f"""<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Pre-commit Hooks Report — {repo_name}</title>
+  <style>
+    *{{box-sizing:border-box;margin:0;padding:0}}
+    body{{font-family:'Segoe UI',system-ui,sans-serif;background:#0d1117;color:#c9d1d9;min-height:100vh}}
+    .header{{background:linear-gradient(135deg,#0d1117 0%,#161b22 50%,#1c2128 100%);border-bottom:1px solid #30363d;padding:40px}}
+    .header-top{{display:flex;align-items:center;gap:16px;margin-bottom:16px}}
+    .tool-badge{{background:#1d2840;border:1px solid #388bfd;color:#79c0ff;padding:6px 16px;border-radius:20px;font-size:13px;font-weight:700;letter-spacing:1px}}
+    .header h1{{font-size:26px;font-weight:700;color:#f0f6fc}}
+    .header-meta{{color:#8b949e;font-size:13px;margin-top:8px}}
+    .header-meta span{{margin-right:24px}}
+    .status-section{{padding:30px;max-width:1100px;margin:0 auto}}
+    .status-badge{{display:inline-block;padding:10px 24px;border-radius:8px;font-size:15px;font-weight:700;border:1px solid {badge_border};background:{badge_bg};color:{badge_color}}}
+    .section{{max-width:1100px;margin:0 auto 30px;padding:0 30px}}
+    .section-title{{font-size:16px;font-weight:600;color:#58a6ff;margin-bottom:14px;padding-bottom:8px;border-bottom:1px solid #21262d}}
+    .info-box{{background:#1d2840;border:1px solid #388bfd;border-radius:8px;padding:16px 20px;margin-bottom:20px;font-size:13px;color:#79c0ff}}
+    .info-box code{{background:#161b22;padding:2px 6px;border-radius:4px;font-size:12px;color:#e6edf3}}
+    .output-box{{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:24px;overflow-x:auto}}
+    pre{{font-family:'Cascadia Code','Fira Code','Courier New',monospace;font-size:13px;line-height:1.7;color:#e6edf3;white-space:pre-wrap;word-wrap:break-word}}
+    .footer{{text-align:center;padding:30px;color:#8b949e;font-size:12px;border-top:1px solid #21262d;margin-top:20px}}
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="header-top">
+      <span class="tool-badge">PRE-COMMIT HOOKS — KICKS</span>
+    </div>
+    <h1>Pre-commit Security Hooks Report</h1>
+    <div class="header-meta">
+      <span>📦 {html.escape(repo_full)}</span>
+      <span>🌿 {html.escape(ref)}</span>
+      <span>🔖 {sha}</span>
+      <span>🕐 {fecha}</span>
+    </div>
+  </div>
+
+  <div class="status-section">
+    <span class="status-badge">{status_label}</span>
+  </div>
+
+  <div class="section">
+    {info_block}
+    <div class="section-title">Output</div>
+    <div class="output-box">
+      <pre>{escaped_output if escaped_output.strip() else '(sin output)'}</pre>
+    </div>
+  </div>
+
+  <div class="footer">
+    Generado por <strong>pipelines-centrales</strong> · Equipo Cybersecurity · {fecha}
+  </div>
+</body>
+</html>"""
+
+          out_path = os.path.join(out_dir, "kicks-report.html")
+          with open(out_path, "w", encoding="utf-8") as fh:
+              fh.write(report)
+          print(f"[Kicks] has_config={has_config} → {out_path}")
+          PYEOF
+
+      - name: Subir reporte
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-hooks-report
+          path: reports/${{ github.event.repository.name }}/
+          retention-days: 30
+          if-no-files-found: warn

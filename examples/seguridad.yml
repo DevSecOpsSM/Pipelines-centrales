@@ -1,0 +1,115 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# EJEMPLO — Workflow consumidor (repositorio de aplicación)
+# Archivo: .github/workflows/seguridad.yml
+# Copiar este archivo en cada repositorio de aplicación de la organización.
+#
+# Este archivo NO contiene lógica de seguridad — solo llama a los pipelines
+# centralizados en MiOrg/pipelines-centrales
+#
+# Pre-requisito: configurar la organización según README de pipelines-centrales
+# ═══════════════════════════════════════════════════════════════════════════
+
+name: Seguridad SSDLC
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+      - "release/**"
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch: {}
+  schedule:
+    # Escaneo nocturno completo: lunes a viernes a las 2:00 AM UTC
+    - cron: "0 2 * * 1-5"
+
+# Permisos mínimos requeridos
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+
+  # ──────────────────────────────────────────────────────────────────────
+  # ETAPA 0 — Pre-commit hooks (opcional, solo si tienes .pre-commit-config.yaml)
+  # ──────────────────────────────────────────────────────────────────────
+  hooks:
+    name: "Etapa 0 · Pre-commit Hooks"
+    uses: MiOrg/pipelines-centrales/.github/workflows/sec-hooks.yml@main
+
+  # ──────────────────────────────────────────────────────────────────────
+  # ETAPA 1 — Detección de secretos (Gitleaks + TruffleHog)
+  # ──────────────────────────────────────────────────────────────────────
+  secretos:
+    name: "Etapa 1 · Secrets Scan"
+    uses: MiOrg/pipelines-centrales/.github/workflows/sec-secrets.yml@main
+    # secrets: inherit  # Descomentar si necesitas pasar PIPELINE_TOKEN
+
+  # ──────────────────────────────────────────────────────────────────────
+  # ETAPA 2 — SAST: Análisis estático (Semgrep OWASP Top 10)
+  # ──────────────────────────────────────────────────────────────────────
+  sast:
+    name: "Etapa 2 · SAST"
+    uses: MiOrg/pipelines-centrales/.github/workflows/sec-sast.yml@main
+
+  # ──────────────────────────────────────────────────────────────────────
+  # ETAPA 3 — SCA: Análisis de dependencias (OWASP Dependency-Check)
+  # ──────────────────────────────────────────────────────────────────────
+  sca:
+    name: "Etapa 3 · SCA"
+    uses: MiOrg/pipelines-centrales/.github/workflows/sec-sca.yml@main
+    secrets:
+      NVD_API_KEY: ${{ secrets.NVD_API_KEY }}  # Opcional — obtener en nvd.nist.gov (gratis)
+
+  # ──────────────────────────────────────────────────────────────────────
+  # ETAPA 4 — Seguridad de contenedores (KICS + Hadolint + Trivy)
+  # ──────────────────────────────────────────────────────────────────────
+  contenedores:
+    name: "Etapa 4 · Container Security"
+    uses: MiOrg/pipelines-centrales/.github/workflows/sec-containers.yml@main
+
+  # ──────────────────────────────────────────────────────────────────────
+  # RESUMEN — Step summary visible en la UI de GitHub Actions
+  # ──────────────────────────────────────────────────────────────────────
+  resumen:
+    name: "Resumen de Seguridad"
+    runs-on: ubuntu-latest
+    if: always()
+    needs:
+      - hooks
+      - secretos
+      - sast
+      - sca
+      - contenedores
+
+    steps:
+      - name: Generar resumen en GitHub Actions UI
+        run: |
+          STATUS_ICON() {
+            case "$1" in
+              success)  echo "✅" ;;
+              failure)  echo "❌" ;;
+              skipped)  echo "⏭️" ;;
+              *)        echo "⚠️" ;;
+            esac
+          }
+
+          cat >> $GITHUB_STEP_SUMMARY << EOF
+          ## 🔒 Resumen SSDLC — ${{ github.repository }}
+
+          | # | Etapa | Herramientas | Estado |
+          |---|-------|-------------|--------|
+          | 0 | Pre-commit Hooks | pre-commit (Kicks) | $(STATUS_ICON "${{ needs.hooks.result }}") ${{ needs.hooks.result }} |
+          | 1 | Secrets Detection | Gitleaks · TruffleHog | $(STATUS_ICON "${{ needs.secretos.result }}") ${{ needs.secretos.result }} |
+          | 2 | SAST | Semgrep (OWASP Top 10) | $(STATUS_ICON "${{ needs.sast.result }}") ${{ needs.sast.result }} |
+          | 3 | SCA | OWASP Dependency-Check | $(STATUS_ICON "${{ needs.sca.result }}") ${{ needs.sca.result }} |
+          | 4 | Container Security | KICS · Hadolint · Trivy | $(STATUS_ICON "${{ needs.contenedores.result }}") ${{ needs.contenedores.result }} |
+
+          > 📋 Los reportes HTML detallados están disponibles en la pestaña **Artifacts** de este workflow run.
+          >
+          > 🛡️ **Modo Auditoría** — todos los scans reportan hallazgos sin bloquear el pipeline.
+          >
+          > Ejecutado por: **pipelines-centrales** · Equipo Cybersecurity
+          EOF
