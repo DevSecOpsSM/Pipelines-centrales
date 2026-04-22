@@ -30,7 +30,9 @@ jobs:
       - name: Ejecutar Semgrep — OWASP Top 10 + Secrets + CI
         continue-on-error: true
         run: |
+          # Quitamos 2>/dev/null, añadimos metrics=off y --config auto para JS/TS
           semgrep scan \
+            --config auto \
             --config p/owasp-top-ten \
             --config p/secrets \
             --config p/ci \
@@ -38,7 +40,8 @@ jobs:
             --output reports/semgrep-raw.json \
             --timeout 300 \
             --max-memory 1500 \
-            . 2>/dev/null || true
+            --metrics=off \
+            . || true
 
           # Garantizar archivo JSON válido si Semgrep no produjo salida
           if [ ! -s reports/semgrep-raw.json ]; then
@@ -237,7 +240,7 @@ jobs:
               </div>
               <div class="section">
                 <div class="rules-info">
-                  Reglas aplicadas: <strong>p/owasp-top-ten</strong> · <strong>p/secrets</strong> · <strong>p/ci</strong>
+                  Reglas aplicadas: <strong>p/owasp-top-ten</strong> · <strong>p/secrets</strong> · <strong>p/ci</strong> · <strong>auto (JS/TS/Go/etc)</strong>
                   — Cobertura multi-lenguaje (Python, JS/TS, Java, Go, PHP, Ruby, C/C++, Kotlin, Swift y más)
                 </div>
                 <div class="section-title">Hallazgos — Semgrep SAST</div>
