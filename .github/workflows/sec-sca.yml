@@ -15,12 +15,6 @@ on:
         required: false
 
 jobs:
-
-  # ─────────────────────────────────────────────────────────────────────────
-  # JOB · OWASP DEPENDENCY-CHECK
-  # Cache semanal de la base de datos NVD para evitar timeouts y 429
-  # El primer run de cada semana actualiza la BD; los siguientes la reutilizan
-  # ─────────────────────────────────────────────────────────────────────────
   dependency-check:
     name: "OWASP Dependency-Check — SCA"
     runs-on: ubuntu-latest
@@ -80,6 +74,7 @@ jobs:
             $NVD_ARGS \
             2>&1 | tail -20 || true
 
+      # Movemos el script de Python a una variable de entorno para evitar problemas de indentación YAML
       - name: Fallback HTML si Dependency-Check no generó reporte
         if: always()
         env:
@@ -87,217 +82,213 @@ jobs:
           REPO_FULL: ${{ github.repository }}
           SHA: ${{ github.sha }}
           REF: ${{ github.ref_name }}
-        run: |
-          python3 << 'PYEOF'
-          import json, html, os
-          from datetime import datetime
+          PYTHON_SCRIPT: |
+            import json, html, os
+            from datetime import datetime
 
-          repo_name = os.environ['REPO_NAME']
-          repo_full = os.environ['REPO_FULL']
-          sha       = os.environ['SHA'][:7]
-          ref       = os.environ['REF']
-          fecha     = datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')
-          out_dir   = f"reports/{repo_name}"
+            repo_name = os.environ['REPO_NAME']
+            repo_full = os.environ['REPO_FULL']
+            sha       = os.environ['SHA'][:7]
+            ref       = os.environ['REF']
+            fecha     = datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')
+            out_dir   = f"reports/{repo_name}"
 
-          html_path = os.path.join(out_dir, "dependency-check-report.html")
-          json_path = os.path.join(out_dir, "dependency-check-report.json")
+            html_path = os.path.join(out_dir, "dependency-check-report.html")
+            json_path = os.path.join(out_dir, "dependency-check-report.json")
 
-          # Si OWASP DC ya generó el HTML nativo, no hacer nada
-          if os.path.exists(html_path) and os.path.getsize(html_path) > 1000:
-              print(f"[DC] Reporte HTML nativo encontrado ({os.path.getsize(html_path)} bytes) — OK")
-              exit(0)
+            if os.path.exists(html_path) and os.path.getsize(html_path) > 1000:
+                print(f"[DC] Reporte HTML nativo encontrado ({os.path.getsize(html_path)} bytes) — OK")
+                exit(0)
 
-          print("[DC] Reporte HTML nativo no encontrado — generando desde JSON...")
+            print("[DC] Reporte HTML nativo no encontrado — generando desde JSON...")
 
-          # Intentar leer el JSON generado por OWASP DC
-          vulns = []
-          dep_count = 0
-          if os.path.exists(json_path):
-              try:
-                  data = json.load(open(json_path, encoding="utf-8"))
-                  deps = data.get("dependencies", [])
-                  dep_count = len(deps)
-                  for dep in deps:
-                      for v in dep.get("vulnerabilities", []):
-                          v["_dep"] = dep.get("fileName", "?")
-                          v["_ecosystem"] = dep.get("ecosystem", "?")
-                          vulns.append(v)
-              except Exception as e:
-                  print(f"[DC] Error leyendo JSON: {e}")
+            vulns = []
+            dep_count = 0
+            if os.path.exists(json_path):
+                try:
+                    data = json.load(open(json_path, encoding="utf-8"))
+                    deps = data.get("dependencies", [])
+                    dep_count = len(deps)
+                    for dep in deps:
+                        for v in dep.get("vulnerabilities", []):
+                            v["_dep"] = dep.get("fileName", "?")
+                            v["_ecosystem"] = dep.get("ecosystem", "?")
+                            vulns.append(v)
+                except Exception as e:
+                    print(f"[DC] Error leyendo JSON: {e}")
 
-          # Ordenar por CVSS descendente
-          def cvss_score(v):
-              return float(v.get("cvssv3", {}).get("baseScore",
-                     v.get("cvssv2", {}).get("score", 0)) or 0)
-          vulns.sort(key=cvss_score, reverse=True)
+            def cvss_score(v):
+                return float(v.get("cvssv3", {}).get("baseScore",
+                       v.get("cvssv2", {}).get("score", 0)) or 0)
+            vulns.sort(key=cvss_score, reverse=True)
 
-          total = len(vulns)
-          counts = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
-          for v in vulns:
-              sev = v.get("severity", "").upper()
-              if sev in counts:
-                  counts[sev] += 1
+            total = len(vulns)
+            counts = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
+            for v in vulns:
+                sev = v.get("severity", "").upper()
+                if sev in counts:
+                    counts[sev] += 1
 
-          SEV_CSS = {
-              "CRITICAL": ("badge-critical", "#f85149"),
-              "HIGH":     ("badge-high",     "#d29922"),
-              "MEDIUM":   ("badge-medium",   "#58a6ff"),
-              "LOW":      ("badge-low",      "#7d8590"),
-          }
+            SEV_CSS = {
+                "CRITICAL": ("badge-critical", "#f85149"),
+                "HIGH":     ("badge-high",     "#d29922"),
+                "MEDIUM":   ("badge-medium",   "#58a6ff"),
+                "LOW":      ("badge-low",      "#7d8590"),
+            }
 
-          rows = ""
-          for v in vulns[:300]:
-              sev     = v.get("severity", "?").upper()
-              css, _  = SEV_CSS.get(sev, ("badge-low", "#7d8590"))
-              name    = html.escape(v.get("name", "?"))
-              dep     = html.escape(v.get("_dep", "?"))
-              score_v3 = v.get("cvssv3", {}).get("baseScore", "")
-              score_v2 = v.get("cvssv2", {}).get("score", "")
-              score   = str(score_v3) if score_v3 else str(score_v2) if score_v2 else "N/A"
-              desc    = html.escape(v.get("description", "")[:180])
-              rows += f"""<tr>
-                <td><span class="badge {css}">{sev}</span></td>
-                <td class="cvss-score">{score}</td>
-                <td><strong>{name}</strong></td>
-                <td class="file-path">{dep}</td>
-                <td style="font-size:12px;color:#8b949e">{desc}</td>
-              </tr>\n"""
+            rows = ""
+            for v in vulns[:300]:
+                sev     = v.get("severity", "?").upper()
+                css, _  = SEV_CSS.get(sev, ("badge-low", "#7d8590"))
+                name    = html.escape(v.get("name", "?"))
+                dep     = html.escape(v.get("_dep", "?"))
+                score_v3 = v.get("cvssv3", {}).get("baseScore", "")
+                score_v2 = v.get("cvssv2", {}).get("score", "")
+                score   = str(score_v3) if score_v3 else str(score_v2) if score_v2 else "N/A"
+                desc    = html.escape(v.get("description", "")[:180])
+                rows += f"""<tr>
+                  <td><span class="badge {css}">{sev}</span></td>
+                  <td class="cvss-score">{score}</td>
+                  <td><strong>{name}</strong></td>
+                  <td class="file-path">{dep}</td>
+                  <td style="font-size:12px;color:#8b949e">{desc}</td>
+                </tr>\n"""
 
-          status_note = ""
-          if total == 0 and dep_count == 0:
-              status_note = """
-              <div class="notice">
-                ⚠️ <strong>Nota:</strong> OWASP Dependency-Check no pudo actualizar la base de datos NVD
-                o no encontró archivos de dependencias en el repositorio.
-                Verifique que el repositorio contenga archivos como <code>pom.xml</code>,
-                <code>package.json</code>, <code>requirements.txt</code>, <code>go.sum</code>, etc.
+            status_note = ""
+            if total == 0 and dep_count == 0:
+                status_note = """
+                <div class="notice">
+                  ⚠️ <strong>Nota:</strong> OWASP Dependency-Check no pudo actualizar la base de datos NVD
+                  o no encontró archivos de dependencias en el repositorio.
+                  Verifique que el repositorio contenga archivos como <code>pom.xml</code>,
+                  <code>package.json</code>, <code>requirements.txt</code>, <code>go.sum</code>, etc.
+                </div>"""
+
+            no_findings = "" if total > 0 else f"""
+              <div class="no-findings">
+                <div class="no-findings-icon">{'⚠️' if dep_count == 0 else '✅'}</div>
+                <h3>{'Sin datos de dependencias' if dep_count == 0 else 'Sin vulnerabilidades detectadas'}</h3>
+                <p>{'No se encontraron archivos de manifiesto de dependencias.' if dep_count == 0 else f'Se analizaron {dep_count} dependencias sin hallazgos CVE.'}</p>
               </div>"""
 
-          no_findings = "" if total > 0 else f"""
-            <div class="no-findings">
-              <div class="no-findings-icon">{'⚠️' if dep_count == 0 else '✅'}</div>
-              <h3>{'Sin datos de dependencias' if dep_count == 0 else 'Sin vulnerabilidades detectadas'}</h3>
-              <p>{'No se encontraron archivos de manifiesto de dependencias.' if dep_count == 0 else f'Se analizaron {dep_count} dependencias sin hallazgos CVE.'}</p>
-            </div>"""
+            table = f"""
+              <table>
+                <thead>
+                  <tr>
+                    <th>Severidad</th><th>CVSS</th><th>CVE</th>
+                    <th>Dependencia</th><th>Descripción</th>
+                  </tr>
+                </thead>
+                <tbody>{rows}</tbody>
+              </table>""" if total > 0 else ""
 
-          table = f"""
-            <table>
-              <thead>
-                <tr>
-                  <th>Severidad</th><th>CVSS</th><th>CVE</th>
-                  <th>Dependencia</th><th>Descripción</th>
-                </tr>
-              </thead>
-              <tbody>{rows}</tbody>
-            </table>""" if total > 0 else ""
+            report = f"""<!DOCTYPE html>
+            <html lang="es">
+            <head>
+              <meta charset="UTF-8">
+              <meta name="viewport" content="width=device-width, initial-scale=1.0">
+              <title>Dependency-Check SCA Report — {repo_name}</title>
+              <style>
+                *{{box-sizing:border-box;margin:0;padding:0}}
+                body{{font-family:'Segoe UI',system-ui,sans-serif;background:#0d1117;color:#c9d1d9;min-height:100vh}}
+                .header{{background:linear-gradient(135deg,#0d1117 0%,#161b22 50%,#1c2128 100%);border-bottom:1px solid #30363d;padding:40px}}
+                .header-top{{display:flex;align-items:center;gap:16px;margin-bottom:16px}}
+                .tool-badge{{background:#1a2d0a;border:1px solid #3fb950;color:#3fb950;padding:6px 16px;border-radius:20px;font-size:13px;font-weight:700;letter-spacing:1px}}
+                .header h1{{font-size:26px;font-weight:700;color:#f0f6fc}}
+                .header-meta{{color:#8b949e;font-size:13px;margin-top:8px}}
+                .header-meta span{{margin-right:24px}}
+                .summary{{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:16px;padding:30px;max-width:1100px;margin:0 auto}}
+                .card{{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:20px;text-align:center;border-top:3px solid}}
+                .card-total{{border-top-color:#8b949e}}
+                .card-critical{{border-top-color:#da3633}}
+                .card-high{{border-top-color:#9e6a03}}
+                .card-medium{{border-top-color:#1f6feb}}
+                .card-low{{border-top-color:#3d444d}}
+                .card-num{{font-size:36px;font-weight:800;line-height:1}}
+                .card-label{{font-size:11px;color:#8b949e;text-transform:uppercase;letter-spacing:0.8px;margin-top:6px}}
+                .num-total{{color:#8b949e}}.num-crit{{color:#f85149}}.num-high{{color:#d29922}}
+                .num-med{{color:#58a6ff}}.num-low{{color:#7d8590}}
+                .section{{max-width:1100px;margin:0 auto 30px;padding:0 30px}}
+                .section-title{{font-size:16px;font-weight:600;color:#58a6ff;margin-bottom:14px;padding-bottom:8px;border-bottom:1px solid #21262d}}
+                .findings-wrap{{background:#161b22;border:1px solid #30363d;border-radius:10px;overflow:hidden}}
+                table{{width:100%;border-collapse:collapse}}
+                thead{{background:#21262d}}
+                th{{padding:12px 16px;color:#8b949e;font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:0.6px;text-align:left}}
+                td{{padding:11px 16px;border-bottom:1px solid #21262d;font-size:13px;vertical-align:top}}
+                tr:last-child td{{border-bottom:none}}
+                tr:hover td{{background:#1c2128}}
+                .badge{{display:inline-block;padding:3px 10px;border-radius:12px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px}}
+                .badge-critical{{background:#3d1114;color:#f85149;border:1px solid #da3633}}
+                .badge-high{{background:#3d2e08;color:#d29922;border:1px solid #9e6a03}}
+                .badge-medium{{background:#0d1d31;color:#58a6ff;border:1px solid #1f6feb}}
+                .badge-low{{background:#1c2128;color:#7d8590;border:1px solid #3d444d}}
+                .cvss-score{{font-weight:700;font-size:14px;color:#e6edf3}}
+                .file-path{{color:#7d8590;font-family:monospace;font-size:12px}}
+                .no-findings{{text-align:center;padding:80px 40px}}
+                .no-findings-icon{{font-size:60px;margin-bottom:16px}}
+                .no-findings h3{{font-size:20px;color:#3fb950;margin-bottom:8px}}
+                .no-findings p{{color:#8b949e;font-size:14px}}
+                .notice{{background:#3d2e08;border:1px solid #9e6a03;border-radius:8px;padding:16px 20px;margin-bottom:20px;font-size:13px;color:#d29922}}
+                .notice code{{background:#161b22;padding:2px 6px;border-radius:4px;font-size:12px}}
+                .footer{{text-align:center;padding:30px;color:#8b949e;font-size:12px;border-top:1px solid #21262d;margin-top:20px}}
+              </style>
+            </head>
+            <body>
+              <div class="header">
+                <div class="header-top">
+                  <span class="tool-badge">OWASP DEPENDENCY-CHECK</span>
+                </div>
+                <h1>Software Composition Analysis (SCA) Report</h1>
+                <div class="header-meta">
+                  <span>📦 {html.escape(repo_full)}</span>
+                  <span>🌿 {html.escape(ref)}</span>
+                  <span>🔖 {sha}</span>
+                  <span>🕐 {fecha}</span>
+                </div>
+              </div>
 
-          report = f"""<!DOCTYPE html>
-<html lang="es">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Dependency-Check SCA Report — {repo_name}</title>
-  <style>
-    *{{box-sizing:border-box;margin:0;padding:0}}
-    body{{font-family:'Segoe UI',system-ui,sans-serif;background:#0d1117;color:#c9d1d9;min-height:100vh}}
-    .header{{background:linear-gradient(135deg,#0d1117 0%,#161b22 50%,#1c2128 100%);border-bottom:1px solid #30363d;padding:40px}}
-    .header-top{{display:flex;align-items:center;gap:16px;margin-bottom:16px}}
-    .tool-badge{{background:#1a2d0a;border:1px solid #3fb950;color:#3fb950;padding:6px 16px;border-radius:20px;font-size:13px;font-weight:700;letter-spacing:1px}}
-    .header h1{{font-size:26px;font-weight:700;color:#f0f6fc}}
-    .header-meta{{color:#8b949e;font-size:13px;margin-top:8px}}
-    .header-meta span{{margin-right:24px}}
-    .summary{{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:16px;padding:30px;max-width:1100px;margin:0 auto}}
-    .card{{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:20px;text-align:center;border-top:3px solid}}
-    .card-total{{border-top-color:#8b949e}}
-    .card-critical{{border-top-color:#da3633}}
-    .card-high{{border-top-color:#9e6a03}}
-    .card-medium{{border-top-color:#1f6feb}}
-    .card-low{{border-top-color:#3d444d}}
-    .card-num{{font-size:36px;font-weight:800;line-height:1}}
-    .card-label{{font-size:11px;color:#8b949e;text-transform:uppercase;letter-spacing:0.8px;margin-top:6px}}
-    .num-total{{color:#8b949e}}.num-crit{{color:#f85149}}.num-high{{color:#d29922}}
-    .num-med{{color:#58a6ff}}.num-low{{color:#7d8590}}
-    .section{{max-width:1100px;margin:0 auto 30px;padding:0 30px}}
-    .section-title{{font-size:16px;font-weight:600;color:#58a6ff;margin-bottom:14px;padding-bottom:8px;border-bottom:1px solid #21262d}}
-    .findings-wrap{{background:#161b22;border:1px solid #30363d;border-radius:10px;overflow:hidden}}
-    table{{width:100%;border-collapse:collapse}}
-    thead{{background:#21262d}}
-    th{{padding:12px 16px;color:#8b949e;font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:0.6px;text-align:left}}
-    td{{padding:11px 16px;border-bottom:1px solid #21262d;font-size:13px;vertical-align:top}}
-    tr:last-child td{{border-bottom:none}}
-    tr:hover td{{background:#1c2128}}
-    .badge{{display:inline-block;padding:3px 10px;border-radius:12px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px}}
-    .badge-critical{{background:#3d1114;color:#f85149;border:1px solid #da3633}}
-    .badge-high{{background:#3d2e08;color:#d29922;border:1px solid #9e6a03}}
-    .badge-medium{{background:#0d1d31;color:#58a6ff;border:1px solid #1f6feb}}
-    .badge-low{{background:#1c2128;color:#7d8590;border:1px solid #3d444d}}
-    .cvss-score{{font-weight:700;font-size:14px;color:#e6edf3}}
-    .file-path{{color:#7d8590;font-family:monospace;font-size:12px}}
-    .no-findings{{text-align:center;padding:80px 40px}}
-    .no-findings-icon{{font-size:60px;margin-bottom:16px}}
-    .no-findings h3{{font-size:20px;color:#3fb950;margin-bottom:8px}}
-    .no-findings p{{color:#8b949e;font-size:14px}}
-    .notice{{background:#3d2e08;border:1px solid #9e6a03;border-radius:8px;padding:16px 20px;margin-bottom:20px;font-size:13px;color:#d29922}}
-    .notice code{{background:#161b22;padding:2px 6px;border-radius:4px;font-size:12px}}
-    .footer{{text-align:center;padding:30px;color:#8b949e;font-size:12px;border-top:1px solid #21262d;margin-top:20px}}
-  </style>
-</head>
-<body>
-  <div class="header">
-    <div class="header-top">
-      <span class="tool-badge">OWASP DEPENDENCY-CHECK</span>
-    </div>
-    <h1>Software Composition Analysis (SCA) Report</h1>
-    <div class="header-meta">
-      <span>📦 {html.escape(repo_full)}</span>
-      <span>🌿 {html.escape(ref)}</span>
-      <span>🔖 {sha}</span>
-      <span>🕐 {fecha}</span>
-    </div>
-  </div>
+              <div class="summary">
+                <div class="card card-total">
+                  <div class="card-num num-total">{total}</div>
+                  <div class="card-label">Total CVEs</div>
+                </div>
+                <div class="card card-critical">
+                  <div class="card-num num-crit">{counts["CRITICAL"]}</div>
+                  <div class="card-label">Critical</div>
+                </div>
+                <div class="card card-high">
+                  <div class="card-num num-high">{counts["HIGH"]}</div>
+                  <div class="card-label">High</div>
+                </div>
+                <div class="card card-medium">
+                  <div class="card-num num-med">{counts["MEDIUM"]}</div>
+                  <div class="card-label">Medium</div>
+                </div>
+                <div class="card card-low">
+                  <div class="card-num num-low">{counts["LOW"]}</div>
+                  <div class="card-label">Low</div>
+                </div>
+              </div>
 
-  <div class="summary">
-    <div class="card card-total">
-      <div class="card-num num-total">{total}</div>
-      <div class="card-label">Total CVEs</div>
-    </div>
-    <div class="card card-critical">
-      <div class="card-num num-crit">{counts["CRITICAL"]}</div>
-      <div class="card-label">Critical</div>
-    </div>
-    <div class="card card-high">
-      <div class="card-num num-high">{counts["HIGH"]}</div>
-      <div class="card-label">High</div>
-    </div>
-    <div class="card card-medium">
-      <div class="card-num num-med">{counts["MEDIUM"]}</div>
-      <div class="card-label">Medium</div>
-    </div>
-    <div class="card card-low">
-      <div class="card-num num-low">{counts["LOW"]}</div>
-      <div class="card-label">Low</div>
-    </div>
-  </div>
+              <div class="section">
+                {status_note}
+                <div class="section-title">Vulnerabilidades en Dependencias — OWASP Dependency-Check</div>
+                <div class="findings-wrap">
+                  {table}{no_findings}
+                </div>
+              </div>
 
-  <div class="section">
-    {status_note}
-    <div class="section-title">Vulnerabilidades en Dependencias — OWASP Dependency-Check</div>
-    <div class="findings-wrap">
-      {table}{no_findings}
-    </div>
-  </div>
+              <div class="footer">
+                Generado por <strong>pipelines-centrales</strong> · Equipo Cybersecurity · {fecha}
+                <br>Base de datos NVD · <em>Cache semanal activa — actualización automática cada lunes</em>
+              </div>
+            </body>
+            </html>"""
 
-  <div class="footer">
-    Generado por <strong>pipelines-centrales</strong> · Equipo Cybersecurity · {fecha}
-    <br>Base de datos NVD · <em>Cache semanal activa — actualización automática cada lunes</em>
-  </div>
-</body>
-</html>"""
-
-          with open(html_path, "w", encoding="utf-8") as fh:
-              fh.write(report)
-          print(f"[DC Fallback] {total} CVE(s) en {dep_count} dependencia(s) → {html_path}")
-          PYEOF
+            with open(html_path, "w", encoding="utf-8") as fh:
+                fh.write(report)
+            print(f"[DC Fallback] {total} CVE(s) en {dep_count} dependencia(s) → {html_path}")
+        run: python3 -c "$PYTHON_SCRIPT"
 
       - name: Subir reporte
         if: always()
