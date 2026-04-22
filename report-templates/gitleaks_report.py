@@ -1,18 +1,39 @@
 """
-Plantilla de reporte HTML — Gitleaks
-Uso standalone (referencia): python3 gitleaks_report.py <input.json> <output.html>
+Plantilla de reporte HTML — Gitleaks (Tema Corporativo: Simon)
+Uso standalone: python3 gitleaks_report.py <input.json> <output.html>
 En el pipeline: el script equivalente está inlineado en sec-secrets.yml
 """
 import json
 import html
 import os
 import sys
-from datetime import datetime
+import base64
+from datetime import datetime, timezone
+
+
+def get_base64_image(image_path):
+    try:
+        if os.path.exists(image_path):
+            with open(image_path, "rb") as img_file:
+                ext = image_path.split('.')[-1].lower()
+                mime = f"image/{ext}"
+                if ext == "svg": mime = "image/svg+xml"
+                encoded = base64.b64encode(img_file.read()).decode('utf-8')
+                return f"data:{mime};base64,{encoded}"
+        return ""
+    except Exception:
+        return ""
 
 
 def generate(findings: list, repo_name: str, repo_full: str, sha: str, ref: str) -> str:
-    fecha = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+    fecha = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     count = len(findings)
+
+    base_dir  = os.path.dirname(os.path.abspath(__file__))
+    logo_path = os.path.join(base_dir, "..", "image", "logo_claro.png")
+    logo_b64  = get_base64_image(logo_path)
+    logo_html = (f'<img src="{logo_b64}" alt="Simon" height="45">'
+                 if logo_b64 else '<h2 style="color:#00F1C7;margin-bottom:10px;">Simon</h2>')
 
     rows = ""
     for f in findings:
@@ -36,7 +57,7 @@ def generate(findings: list, repo_name: str, repo_full: str, sha: str, ref: str)
         ""
         if count > 0
         else """<div class="no-findings">
-          <div class="no-findings-icon">✅</div>
+          <div class="no-findings-icon" style="color:#4EDA56;">✅</div>
           <h3>Sin secretos detectados</h3>
           <p>Gitleaks analizó el historial completo sin encontrar secretos expuestos.</p>
         </div>"""
@@ -60,37 +81,66 @@ def generate(findings: list, repo_name: str, repo_full: str, sha: str, ref: str)
   <title>Gitleaks Report — {repo_name}</title>
   <style>
     *{{box-sizing:border-box;margin:0;padding:0}}
-    body{{font-family:'Segoe UI',system-ui,sans-serif;background:#0d1117;color:#c9d1d9}}
-    .header{{background:linear-gradient(135deg,#0d1117,#161b22,#1c2128);border-bottom:1px solid #30363d;padding:40px}}
-    .tool-badge{{background:#3d1114;border:1px solid #da3633;color:#f85149;padding:6px 16px;border-radius:20px;font-size:13px;font-weight:700}}
-    .header h1{{font-size:26px;font-weight:700;color:#f0f6fc;margin-top:12px}}
-    .meta{{color:#8b949e;font-size:13px;margin-top:8px}}
+    body{{font-family:'Segoe UI',system-ui,sans-serif;background:#1A1A1A;color:#E7E7E7}}
+
+    .header{{background:#000000;border-bottom:2px solid #00F1C7;padding:30px 40px;position:relative}}
+    .logo-container{{margin-bottom:15px}}
+    .tool-badge{{background:rgba(0,241,199,0.1);border:1px solid #00F1C7;color:#00F1C7;padding:6px 16px;border-radius:20px;font-size:13px;font-weight:700}}
+    .header h1{{font-size:26px;font-weight:700;color:#FFFFFF;margin-top:16px}}
+    .meta{{color:#B0B0B0;font-size:13px;margin-top:10px}}
     .meta span{{margin-right:20px}}
+
+    .btn-pdf{{position:absolute;top:40px;right:40px;background:#00F1C7;color:#000000;font-weight:bold;padding:10px 20px;border:none;border-radius:6px;cursor:pointer;font-size:14px;transition:0.2s}}
+    .btn-pdf:hover{{background:#00c4a0}}
+
     .cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:16px;padding:30px;max-width:1100px;margin:0 auto}}
-    .card{{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:24px;text-align:center;border-top:3px solid #da3633}}
-    .card-num{{font-size:40px;font-weight:800;color:#f85149}}
-    .card-label{{font-size:12px;color:#8b949e;text-transform:uppercase;margin-top:6px}}
+    .card{{background:#373737;border-radius:8px;padding:20px;text-align:center;border-top:4px solid}}
+    .card-total{{border-top-color:#B0B0B0}}
+    .card-critical{{border-top-color:#F63D3D}}
+    .card-num{{font-size:40px;font-weight:800;line-height:1}}
+    .card-label{{font-size:11px;color:#B0B0B0;text-transform:uppercase;margin-top:8px;letter-spacing:1px}}
+    .num-total{{color:#FFFFFF}} .num-crit{{color:#F63D3D}}
+
     .section{{max-width:1100px;margin:0 auto 30px;padding:0 30px}}
-    .section-title{{font-size:16px;font-weight:600;color:#58a6ff;margin-bottom:14px;padding-bottom:8px;border-bottom:1px solid #21262d}}
-    .wrap{{background:#161b22;border:1px solid #30363d;border-radius:10px;overflow:hidden}}
+    .section-title{{font-size:16px;font-weight:600;color:#00F1C7;margin-bottom:14px;padding-bottom:8px;border-bottom:1px solid #373737}}
+    .wrap{{background:#000000;border:1px solid #373737;border-radius:8px;overflow:hidden}}
     table{{width:100%;border-collapse:collapse}}
-    thead{{background:#21262d}}
-    th{{padding:12px 16px;color:#8b949e;font-size:12px;text-transform:uppercase;text-align:left}}
-    td{{padding:12px 16px;border-bottom:1px solid #21262d;font-size:13px;vertical-align:top}}
-    tr:hover td{{background:#1c2128}}
-    .badge{{display:inline-block;padding:3px 10px;border-radius:12px;font-size:11px;font-weight:700;text-transform:uppercase}}
-    .badge-critical{{background:#3d1114;color:#f85149;border:1px solid #da3633}}
-    .file-path{{color:#7d8590;font-family:monospace;font-size:12px}}
+    thead{{background:#373737}}
+    th{{padding:14px 16px;color:#E7E7E7;font-size:12px;text-transform:uppercase;text-align:left;letter-spacing:0.5px}}
+    td{{padding:14px 16px;border-bottom:1px solid #373737;font-size:13px;vertical-align:top;color:#D1D1D1}}
+    tr:hover td{{background:#1A1A1A}}
+
+    .badge{{display:inline-block;padding:4px 12px;border-radius:12px;font-size:11px;font-weight:bold;text-transform:uppercase}}
+    .badge-critical{{background:rgba(246,61,61,0.15);color:#F63D3D;border:1px solid #F63D3D}}
+
+    code{{background:#373737;color:#00F1C7;padding:3px 6px;border-radius:4px;font-size:11.5px;word-break:break-all}}
+    .file-path{{color:#888888;font-family:monospace;font-size:12px}}
+
     .no-findings{{text-align:center;padding:80px 40px}}
     .no-findings-icon{{font-size:60px;margin-bottom:16px}}
-    .no-findings h3{{font-size:20px;color:#3fb950;margin-bottom:8px}}
-    .no-findings p{{color:#8b949e}}
-    .footer{{text-align:center;padding:30px;color:#8b949e;font-size:12px;border-top:1px solid #21262d}}
+    .no-findings h3{{font-size:20px;color:#4EDA56;margin-bottom:8px}}
+    .no-findings p{{color:#B0B0B0}}
+    .footer{{text-align:center;padding:30px;color:#888888;font-size:12px;border-top:1px solid #373737;margin-top:20px}}
+
+    @media print {{
+      body{{background:#FFFFFF !important;color:#000000 !important}}
+      .header{{background:#FFFFFF !important;border-bottom:2px solid #00F1C7 !important;padding:20px 0}}
+      .header h1{{color:#000000 !important}}
+      .btn-pdf{{display:none !important}}
+      .wrap{{border:1px solid #D1D1D1 !important;background:#FFFFFF !important}}
+      thead{{background:#F6F6F6 !important}}
+      th{{color:#373737 !important}}
+      td{{border-bottom:1px solid #E7E7E7 !important;color:#1A1A1A !important}}
+      .card{{background:#F6F6F6 !important;border:1px solid #E7E7E7 !important;border-top:4px solid !important}}
+      code{{background:#F6F6F6 !important;color:#006257 !important}}
+    }}
   </style>
 </head>
 <body>
   <div class="header">
-    <span class="tool-badge">GITLEAKS</span>
+    <button class="btn-pdf" onclick="window.print()">📥 Descargar PDF</button>
+    <div class="logo-container">{logo_html}</div>
+    <span class="tool-badge">GITLEAKS — SECRETS SCAN</span>
     <h1>Secrets Detection Report</h1>
     <div class="meta">
       <span>📦 {html.escape(repo_full)}</span>
@@ -99,17 +149,18 @@ def generate(findings: list, repo_name: str, repo_full: str, sha: str, ref: str)
       <span>🕐 {fecha}</span>
     </div>
   </div>
+
   <div class="cards">
-    <div class="card">
-      <div class="card-num">{count}</div>
-      <div class="card-label">Secretos detectados</div>
-    </div>
+    <div class="card card-total"><div class="card-num num-total">{count}</div><div class="card-label">Total</div></div>
+    <div class="card card-critical"><div class="card-num num-crit">{count}</div><div class="card-label">Exposiciones</div></div>
   </div>
+
   <div class="section">
-    <div class="section-title">Hallazgos</div>
+    <div class="section-title">Hallazgos — Gitleaks (historial completo)</div>
     <div class="wrap">{table}{no_findings}</div>
   </div>
-  <div class="footer">Generado por <strong>pipelines-centrales</strong> · Equipo Cybersecurity · {fecha}</div>
+
+  <div class="footer">Generado por <strong>pipelines-centrales</strong> · Equipo Cybersecurity · Simon · {fecha}</div>
 </body>
 </html>"""
 
