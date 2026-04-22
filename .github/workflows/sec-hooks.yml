@@ -112,15 +112,15 @@ jobs:
                 passed = "Failed" not in output and "error" not in output.lower()
                 status_class = "pass" if passed else "fail"
                 status_label = "Hooks ejecutados correctamente" if passed else "Hooks con fallos detectados"
-                badge_color  = "#3fb950" if passed else "#f85149"
-                badge_bg     = "#0d3321" if passed else "#3d1114"
-                badge_border = "#238636" if passed else "#da3633"
+                badge_color  = "#4EDA56" if passed else "#F63D3D"
+                badge_bg     = "rgba(78,218,86,0.15)" if passed else "rgba(246,61,61,0.15)"
+                badge_border = "#4EDA56" if passed else "#F63D3D"
             else:
                 status_class = "warn"
                 status_label = "Sin configuración de pre-commit"
-                badge_color  = "#d29922"
-                badge_bg     = "#3d2e08"
-                badge_border = "#9e6a03"
+                badge_color  = "#FAD900"
+                badge_bg     = "rgba(250,217,0,0.15)"
+                badge_border = "#FAD900"
 
             escaped_output = html.escape(output)
 
@@ -134,50 +134,59 @@ jobs:
                   El ejemplo mínimo está incluido en el output a continuación.
                 </div>"""
 
+            _logo_h = '<h2 style="color:#00F1C7;margin-bottom:10px;">Simon</h2>'
+            try:
+                import base64 as _b64h
+                if os.path.exists("image/logo_claro.png"):
+                    with open("image/logo_claro.png","rb") as _lf:
+                        _logo_h = f'<img src="data:image/png;base64,{_b64h.b64encode(_lf.read()).decode()}" alt="Simon" height="45">'
+            except Exception:
+                pass
+
             report = f"""<!DOCTYPE html>
             <html lang="es">
             <head>
               <meta charset="UTF-8">
-              <meta name="viewport" content="width=device-width, initial-scale=1.0">
               <title>Pre-commit Hooks Report — {repo_name}</title>
               <style>
                 *{{box-sizing:border-box;margin:0;padding:0}}
-                body{{font-family:'Segoe UI',system-ui,sans-serif;background:#0d1117;color:#c9d1d9;min-height:100vh}}
-                .header{{background:linear-gradient(135deg,#0d1117 0%,#161b22 50%,#1c2128 100%);border-bottom:1px solid #30363d;padding:40px}}
-                .header-top{{display:flex;align-items:center;gap:16px;margin-bottom:16px}}
-                .tool-badge{{background:#1d2840;border:1px solid #388bfd;color:#79c0ff;padding:6px 16px;border-radius:20px;font-size:13px;font-weight:700;letter-spacing:1px}}
-                .header h1{{font-size:26px;font-weight:700;color:#f0f6fc}}
-                .header-meta{{color:#8b949e;font-size:13px;margin-top:8px}}
-                .header-meta span{{margin-right:24px}}
+                body{{font-family:'Segoe UI',system-ui,sans-serif;background:#1A1A1A;color:#E7E7E7}}
+                .header{{background:#000000;border-bottom:2px solid #00F1C7;padding:30px 40px;position:relative}}
+                .logo-container{{margin-bottom:15px}}
+                .tool-badge{{background:rgba(0,241,199,0.1);border:1px solid #00F1C7;color:#00F1C7;padding:6px 16px;border-radius:20px;font-size:13px;font-weight:700}}
+                .header h1{{font-size:26px;font-weight:700;color:#FFFFFF;margin-top:16px}}
+                .meta{{color:#B0B0B0;font-size:13px;margin-top:10px}}
+                .meta span{{margin-right:20px}}
+                .btn-pdf{{position:absolute;top:40px;right:40px;background:#00F1C7;color:#000000;font-weight:bold;padding:10px 20px;border:none;border-radius:6px;cursor:pointer;font-size:14px;transition:0.2s}}
+                .btn-pdf:hover{{background:#00c4a0}}
                 .status-section{{padding:30px;max-width:1100px;margin:0 auto}}
                 .status-badge{{display:inline-block;padding:10px 24px;border-radius:8px;font-size:15px;font-weight:700;border:1px solid {badge_border};background:{badge_bg};color:{badge_color}}}
                 .section{{max-width:1100px;margin:0 auto 30px;padding:0 30px}}
-                .section-title{{font-size:16px;font-weight:600;color:#58a6ff;margin-bottom:14px;padding-bottom:8px;border-bottom:1px solid #21262d}}
-                .info-box{{background:#1d2840;border:1px solid #388bfd;border-radius:8px;padding:16px 20px;margin-bottom:20px;font-size:13px;color:#79c0ff}}
-                .info-box code{{background:#161b22;padding:2px 6px;border-radius:4px;font-size:12px;color:#e6edf3}}
-                .output-box{{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:24px;overflow-x:auto}}
-                pre{{font-family:'Cascadia Code','Fira Code','Courier New',monospace;font-size:13px;line-height:1.7;color:#e6edf3;white-space:pre-wrap;word-wrap:break-word}}
-                .footer{{text-align:center;padding:30px;color:#8b949e;font-size:12px;border-top:1px solid #21262d;margin-top:20px}}
+                .section-title{{font-size:16px;font-weight:600;color:#00F1C7;margin-bottom:14px;padding-bottom:8px;border-bottom:1px solid #373737}}
+                .info-box{{background:rgba(250,217,0,0.08);border:1px solid #FAD900;border-radius:8px;padding:16px 20px;margin-bottom:20px;font-size:13px;color:#FAD900}}
+                .info-box code{{background:#373737;padding:2px 6px;border-radius:4px;font-size:12px;color:#E7E7E7}}
+                .output-box{{background:#000000;border:1px solid #373737;border-radius:8px;padding:24px;overflow-x:auto}}
+                pre{{font-family:'Cascadia Code','Fira Code','Courier New',monospace;font-size:13px;line-height:1.7;color:#D1D1D1;white-space:pre-wrap;word-wrap:break-word}}
+                .footer{{text-align:center;padding:30px;color:#888888;font-size:12px;border-top:1px solid #373737;margin-top:20px}}
+                @media print{{body{{background:#FFFFFF !important;color:#000000 !important}}.header{{background:#FFFFFF !important;border-bottom:2px solid #00F1C7 !important}}.header h1{{color:#000000 !important}}.btn-pdf{{display:none !important}}.output-box{{border:1px solid #D1D1D1 !important;background:#FFFFFF !important}}pre{{color:#1A1A1A !important}}}}
               </style>
             </head>
             <body>
               <div class="header">
-                <div class="header-top">
-                  <span class="tool-badge">PRE-COMMIT HOOKS — KICKS</span>
-                </div>
+                <button class="btn-pdf" onclick="window.print()">📥 Descargar PDF</button>
+                <div class="logo-container">{_logo_h}</div>
+                <span class="tool-badge">PRE-COMMIT HOOKS — KICKS</span>
                 <h1>Pre-commit Security Hooks Report</h1>
-                <div class="header-meta">
+                <div class="meta">
                   <span>📦 {html.escape(repo_full)}</span>
                   <span>🌿 {html.escape(ref)}</span>
                   <span>🔖 {sha}</span>
                   <span>🕐 {fecha}</span>
                 </div>
               </div>
-
               <div class="status-section">
                 <span class="status-badge">{status_label}</span>
               </div>
-
               <div class="section">
                 {info_block}
                 <div class="section-title">Output</div>
@@ -185,10 +194,7 @@ jobs:
                   <pre>{escaped_output if escaped_output.strip() else '(sin output)'}</pre>
                 </div>
               </div>
-
-              <div class="footer">
-                Generado por <strong>pipelines-centrales</strong> · Equipo Cybersecurity · {fecha}
-              </div>
+              <div class="footer">Generado por <strong>pipelines-centrales</strong> · Equipo Cybersecurity · Simon · {fecha}</div>
             </body>
             </html>"""
 

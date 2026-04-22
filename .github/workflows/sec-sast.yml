@@ -158,104 +158,93 @@ jobs:
                 <tbody>{rows}</tbody>
               </table>""" if total > 0 else ""
 
+            _logo_s = '<h2 style="color:#00F1C7;margin-bottom:10px;">Simon</h2>'
+            try:
+                import base64 as _b64s
+                if os.path.exists("image/logo_claro.png"):
+                    with open("image/logo_claro.png","rb") as _lf:
+                        _logo_s = f'<img src="data:image/png;base64,{_b64s.b64encode(_lf.read()).decode()}" alt="Simon" height="45">'
+            except Exception:
+                pass
+
             report = f"""<!DOCTYPE html>
             <html lang="es">
             <head>
               <meta charset="UTF-8">
-              <meta name="viewport" content="width=device-width, initial-scale=1.0">
               <title>Semgrep SAST Report — {repo_name}</title>
               <style>
                 *{{box-sizing:border-box;margin:0;padding:0}}
-                body{{font-family:'Segoe UI',system-ui,sans-serif;background:#0d1117;color:#c9d1d9;min-height:100vh}}
-                .header{{background:linear-gradient(135deg,#0d1117 0%,#161b22 50%,#1c2128 100%);border-bottom:1px solid #30363d;padding:40px}}
-                .header-top{{display:flex;align-items:center;gap:16px;margin-bottom:16px}}
-                .tool-badge{{background:#0d1d31;border:1px solid #1f6feb;color:#58a6ff;padding:6px 16px;border-radius:20px;font-size:13px;font-weight:700;letter-spacing:1px}}
-                .header h1{{font-size:26px;font-weight:700;color:#f0f6fc}}
-                .header-meta{{color:#8b949e;font-size:13px;margin-top:8px}}
-                .header-meta span{{margin-right:24px}}
-                .summary{{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:16px;padding:30px;max-width:1100px;margin:0 auto}}
-                .card{{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:22px;text-align:center;border-top:3px solid}}
-                .card-total{{border-top-color:#8b949e}}
-                .card-error{{border-top-color:#da3633}}
-                .card-warning{{border-top-color:#9e6a03}}
-                .card-info{{border-top-color:#1f6feb}}
-                .card-num{{font-size:38px;font-weight:800;line-height:1}}
-                .card-label{{font-size:12px;color:#8b949e;text-transform:uppercase;letter-spacing:0.8px;margin-top:6px}}
-                .num-total{{color:#8b949e}}.num-error{{color:#f85149}}
-                .num-warning{{color:#d29922}}.num-info{{color:#58a6ff}}
+                body{{font-family:'Segoe UI',system-ui,sans-serif;background:#1A1A1A;color:#E7E7E7}}
+                .header{{background:#000000;border-bottom:2px solid #00F1C7;padding:30px 40px;position:relative}}
+                .logo-container{{margin-bottom:15px}}
+                .tool-badge{{background:rgba(0,241,199,0.1);border:1px solid #00F1C7;color:#00F1C7;padding:6px 16px;border-radius:20px;font-size:13px;font-weight:700}}
+                .header h1{{font-size:26px;font-weight:700;color:#FFFFFF;margin-top:16px}}
+                .meta{{color:#B0B0B0;font-size:13px;margin-top:10px}}
+                .meta span{{margin-right:20px}}
+                .btn-pdf{{position:absolute;top:40px;right:40px;background:#00F1C7;color:#000000;font-weight:bold;padding:10px 20px;border:none;border-radius:6px;cursor:pointer;font-size:14px;transition:0.2s}}
+                .btn-pdf:hover{{background:#00c4a0}}
+                .cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:16px;padding:30px;max-width:1100px;margin:0 auto}}
+                .card{{background:#373737;border-radius:8px;padding:20px;text-align:center;border-top:4px solid}}
+                .card-total{{border-top-color:#B0B0B0}}
+                .card-error{{border-top-color:#F63D3D}}
+                .card-warning{{border-top-color:#FAD900}}
+                .card-info{{border-top-color:#00F1C7}}
+                .card-num{{font-size:36px;font-weight:800;line-height:1}}
+                .card-label{{font-size:11px;color:#B0B0B0;text-transform:uppercase;margin-top:8px;letter-spacing:1px}}
+                .num-total{{color:#FFFFFF}}.num-error{{color:#F63D3D}}.num-warning{{color:#FAD900}}.num-info{{color:#00F1C7}}
                 .section{{max-width:1100px;margin:0 auto 30px;padding:0 30px}}
-                .section-title{{font-size:16px;font-weight:600;color:#58a6ff;margin-bottom:14px;padding-bottom:8px;border-bottom:1px solid #21262d}}
-                .findings-wrap{{background:#161b22;border:1px solid #30363d;border-radius:10px;overflow:hidden}}
+                .section-title{{font-size:16px;font-weight:600;color:#00F1C7;margin-bottom:14px;padding-bottom:8px;border-bottom:1px solid #373737}}
+                .wrap,.findings-wrap{{background:#000000;border:1px solid #373737;border-radius:8px;overflow:hidden}}
                 table{{width:100%;border-collapse:collapse}}
-                thead{{background:#21262d}}
-                th{{padding:12px 16px;color:#8b949e;font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:0.6px;text-align:left}}
-                td{{padding:12px 16px;border-bottom:1px solid #21262d;font-size:13px;vertical-align:top}}
-                tr:last-child td{{border-bottom:none}}
-                tr:hover td{{background:#1c2128}}
-                .badge{{display:inline-block;padding:3px 10px;border-radius:12px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px}}
-                .badge-critical{{background:#3d1114;color:#f85149;border:1px solid #da3633}}
-                .badge-high{{background:#3d2e08;color:#d29922;border:1px solid #9e6a03}}
-                .badge-medium{{background:#0d1d31;color:#58a6ff;border:1px solid #1f6feb}}
-                .rule{{background:#21262d;color:#79c0ff;padding:2px 6px;border-radius:4px;font-size:11px;word-break:break-all}}
-                .file-path{{color:#7d8590;font-family:monospace;font-size:12px}}
+                thead{{background:#373737}}
+                th{{padding:14px 16px;color:#E7E7E7;font-size:12px;text-transform:uppercase;text-align:left;letter-spacing:0.5px}}
+                td{{padding:14px 16px;border-bottom:1px solid #373737;font-size:13px;vertical-align:top;color:#D1D1D1}}
+                tr:hover td{{background:#1A1A1A}}
+                .badge{{display:inline-block;padding:4px 12px;border-radius:12px;font-size:11px;font-weight:bold;text-transform:uppercase}}
+                .badge-critical{{background:rgba(246,61,61,0.15);color:#F63D3D;border:1px solid #F63D3D}}
+                .badge-high{{background:rgba(250,217,0,0.15);color:#FAD900;border:1px solid #FAD900}}
+                .badge-medium{{background:rgba(0,241,199,0.15);color:#00F1C7;border:1px solid #00F1C7}}
+                .rule{{background:#373737;color:#00F1C7;padding:2px 6px;border-radius:4px;font-size:11px;word-break:break-all}}
+                .file-path{{color:#888888;font-family:monospace;font-size:12px}}
+                .rules-info{{background:#373737;border:1px solid #00F1C7;border-radius:8px;padding:16px 20px;margin-bottom:20px;font-size:13px;color:#B0B0B0}}
+                .rules-info strong{{color:#E7E7E7}}
                 .no-findings{{text-align:center;padding:80px 40px}}
                 .no-findings-icon{{font-size:60px;margin-bottom:16px}}
-                .no-findings h3{{font-size:20px;color:#3fb950;margin-bottom:8px}}
-                .no-findings p{{color:#8b949e;font-size:14px}}
-                .footer{{text-align:center;padding:30px;color:#8b949e;font-size:12px;border-top:1px solid #21262d;margin-top:20px}}
-                .rules-info{{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:16px 20px;margin-bottom:20px;font-size:13px;color:#8b949e}}
-                .rules-info strong{{color:#c9d1d9}}
+                .no-findings h3{{font-size:20px;color:#4EDA56;margin-bottom:8px}}
+                .no-findings p{{color:#B0B0B0}}
+                .footer{{text-align:center;padding:30px;color:#888888;font-size:12px;border-top:1px solid #373737;margin-top:20px}}
+                @media print{{body{{background:#FFFFFF !important;color:#000000 !important}}.header{{background:#FFFFFF !important;border-bottom:2px solid #00F1C7 !important}}.header h1{{color:#000000 !important}}.btn-pdf{{display:none !important}}.wrap,.findings-wrap{{border:1px solid #D1D1D1 !important;background:#FFFFFF !important}}thead{{background:#F6F6F6 !important}}th{{color:#373737 !important}}td{{border-bottom:1px solid #E7E7E7 !important;color:#1A1A1A !important}}.card{{background:#F6F6F6 !important;border-top:4px solid !important}}}}
               </style>
             </head>
             <body>
               <div class="header">
-                <div class="header-top">
-                  <span class="tool-badge">SEMGREP — SAST</span>
-                </div>
+                <button class="btn-pdf" onclick="window.print()">📥 Descargar PDF</button>
+                <div class="logo-container">{_logo_s}</div>
+                <span class="tool-badge">SEMGREP — SAST</span>
                 <h1>Static Application Security Testing Report</h1>
-                <div class="header-meta">
+                <div class="meta">
                   <span>📦 {html.escape(repo_full)}</span>
                   <span>🌿 {html.escape(ref)}</span>
                   <span>🔖 {sha}</span>
                   <span>🕐 {fecha}</span>
                 </div>
               </div>
-
-              <div class="summary">
-                <div class="card card-total">
-                  <div class="card-num num-total">{total}</div>
-                  <div class="card-label">Total</div>
-                </div>
-                <div class="card card-error">
-                  <div class="card-num num-error">{counts.get("ERROR", 0)}</div>
-                  <div class="card-label">Error</div>
-                </div>
-                <div class="card card-warning">
-                  <div class="card-num num-warning">{counts.get("WARNING", 0)}</div>
-                  <div class="card-label">Warning</div>
-                </div>
-                <div class="card card-info">
-                  <div class="card-num num-info">{counts.get("INFO", 0)}</div>
-                  <div class="card-label">Info</div>
-                </div>
+              <div class="cards">
+                <div class="card card-total"><div class="card-num num-total">{total}</div><div class="card-label">Total</div></div>
+                <div class="card card-error"><div class="card-num num-error">{counts.get("ERROR", 0)}</div><div class="card-label">Error</div></div>
+                <div class="card card-warning"><div class="card-num num-warning">{counts.get("WARNING", 0)}</div><div class="card-label">Warning</div></div>
+                <div class="card card-info"><div class="card-num num-info">{counts.get("INFO", 0)}</div><div class="card-label">Info</div></div>
               </div>
-
               <div class="section">
                 <div class="rules-info">
                   Reglas aplicadas: <strong>p/owasp-top-ten</strong> · <strong>p/secrets</strong> · <strong>p/ci</strong>
                   — Cobertura multi-lenguaje (Python, JS/TS, Java, Go, PHP, Ruby, C/C++, Kotlin, Swift y más)
                 </div>
                 <div class="section-title">Hallazgos — Semgrep SAST</div>
-                <div class="findings-wrap">
-                  {table}{no_findings}
-                </div>
+                <div class="wrap">{table}{no_findings}</div>
               </div>
-
               {error_block}
-
-              <div class="footer">
-                Generado por <strong>pipelines-centrales</strong> · Equipo Cybersecurity · {fecha}
-              </div>
+              <div class="footer">Generado por <strong>pipelines-centrales</strong> · Equipo Cybersecurity · Simon · {fecha}</div>
             </body>
             </html>"""
 
