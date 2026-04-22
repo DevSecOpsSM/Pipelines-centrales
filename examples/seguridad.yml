@@ -25,7 +25,7 @@ on:
     # Escaneo nocturno completo: lunes a viernes a las 2:00 AM UTC
     - cron: "0 2 * * 1-5"
 
-# Permisos mínimos requeridos
+# Permisos mínimos requeridos globales
 permissions:
   contents: read
   actions: read
@@ -37,14 +37,14 @@ jobs:
   # ──────────────────────────────────────────────────────────────────────
   hooks:
     name: "Etapa 0 · Pre-commit Hooks"
-    uses: MiOrg/pipelines-centrales/.github/workflows/sec-hooks.yml@main
+    uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-hooks.yml@main
 
   # ──────────────────────────────────────────────────────────────────────
   # ETAPA 1 — Detección de secretos (Gitleaks + TruffleHog)
   # ──────────────────────────────────────────────────────────────────────
   secretos:
     name: "Etapa 1 · Secrets Scan"
-    uses: MiOrg/pipelines-centrales/.github/workflows/sec-secrets.yml@main
+    uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-secrets.yml@main
     # secrets: inherit  # Descomentar si necesitas pasar PIPELINE_TOKEN
 
   # ──────────────────────────────────────────────────────────────────────
@@ -52,23 +52,22 @@ jobs:
   # ──────────────────────────────────────────────────────────────────────
   sast:
     name: "Etapa 2 · SAST"
-    uses: MiOrg/pipelines-centrales/.github/workflows/sec-sast.yml@main
+    uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-sast.yml@main
 
   # ──────────────────────────────────────────────────────────────────────
   # ETAPA 3 — SCA: Análisis de dependencias (OWASP Dependency-Check)
   # ──────────────────────────────────────────────────────────────────────
   sca:
     name: "Etapa 3 · SCA"
-    uses: MiOrg/pipelines-centrales/.github/workflows/sec-sca.yml@main
-    secrets:
-      NVD_API_KEY: ${{ secrets.NVD_API_KEY }}  # Opcional — obtener en nvd.nist.gov (gratis)
+    uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-sca.yml@main
+    secrets: inherit
 
   # ──────────────────────────────────────────────────────────────────────
   # ETAPA 4 — Seguridad de contenedores (KICS + Hadolint + Trivy)
   # ──────────────────────────────────────────────────────────────────────
   contenedores:
     name: "Etapa 4 · Container Security"
-    uses: MiOrg/pipelines-centrales/.github/workflows/sec-containers.yml@main
+    uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-containers.yml@main
 
   # ──────────────────────────────────────────────────────────────────────
   # RESUMEN — Step summary visible en la UI de GitHub Actions
@@ -95,10 +94,8 @@ jobs:
               *)        echo "⚠️" ;;
             esac
           }
-
           cat >> $GITHUB_STEP_SUMMARY << EOF
           ## 🔒 Resumen SSDLC — ${{ github.repository }}
-
           | # | Etapa | Herramientas | Estado |
           |---|-------|-------------|--------|
           | 0 | Pre-commit Hooks | pre-commit (Kicks) | $(STATUS_ICON "${{ needs.hooks.result }}") ${{ needs.hooks.result }} |
@@ -106,10 +103,46 @@ jobs:
           | 2 | SAST | Semgrep (OWASP Top 10) | $(STATUS_ICON "${{ needs.sast.result }}") ${{ needs.sast.result }} |
           | 3 | SCA | OWASP Dependency-Check | $(STATUS_ICON "${{ needs.sca.result }}") ${{ needs.sca.result }} |
           | 4 | Container Security | KICS · Hadolint · Trivy | $(STATUS_ICON "${{ needs.contenedores.result }}") ${{ needs.contenedores.result }} |
-
           > 📋 Los reportes HTML detallados están disponibles en la pestaña **Artifacts** de este workflow run.
           >
           > 🛡️ **Modo Auditoría** — todos los scans reportan hallazgos sin bloquear el pipeline.
           >
           > Ejecutado por: **pipelines-centrales** · Equipo Cybersecurity
           EOF
+
+  # ──────────────────────────────────────────────────────────────────────
+  # ETAPA 5 — Empaquetar y Limpiar Reportes (Consolidación)
+  # ──────────────────────────────────────────────────────────────────────
+  empaquetar-reportes:
+    name: "📦 Consolidar Reportes"
+    needs: [hooks, secretos, sast, sca, contenedores]
+    if: always()
+    runs-on: ubuntu-latest
+    # Se eleva el permiso LOCALMENTE para poder borrar los artefactos vía API
+    permissions:
+      actions: write
+    steps:
+      - name: Descargar reportes individuales
+        uses: actions/download-artifact@v4
+        with:
+          pattern: security-*
+          path: Reportes-${{ github.event.repository.name }}
+          merge-multiple: true
+
+      - name: Subir carpeta unificada
+        uses: actions/upload-artifact@v4
+        with:
+          name: Reportes-Seguridad-${{ github.event.repository.name }}
+          path: Reportes-${{ github.event.repository.name }}/
+          retention-days: 30
+
+      - name: Limpiar artefactos temporales de la interfaz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Borrando artefactos individuales para limpiar la interfaz..."
+          ARTIFACTS=$(gh api repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts --jq '.artifacts[] | select(.name | startswith("security-")) | .id')
+          for id in $ARTIFACTS; do
+            gh api repos/${{ github.repository }}/actions/artifacts/$id -X DELETE || true
+          done
+          echo "¡Limpieza completada! Solo queda el paquete consolidado."
