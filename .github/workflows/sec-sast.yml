@@ -360,7 +360,8 @@ jobs:
                       
                       print(f"[Issues] Creando ticket: {title}")
                       try:
-                          subprocess.run(['gh', 'issue', 'create', '--title', title, '--body', body, '--label', 'security,bug'])
+                          
+                          subprocess.run(['gh', 'issue', 'create', '--title', title, '--body', body], check=True)
                           existing_titles.append(title) # Lo agregamos a la lista en memoria para no duplicar en este mismo loop
                           issues_creados += 1
                       except Exception as e:
