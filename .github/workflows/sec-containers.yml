@@ -23,6 +23,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      issues: write
+ 
 
     steps:
       - name: Checkout repositorio
@@ -611,6 +613,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      issues: write
 
     steps:
       - name: Checkout repositorio
