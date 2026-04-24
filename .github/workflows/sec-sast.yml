@@ -28,13 +28,14 @@ jobs:
       - name: Instalar Semgrep
         run: pip install semgrep --quiet
 
-      - name: Ejecutar Semgrep — OWASP Top 10 + Secrets + CI
+      - name: Ejecutar Semgrep — Seguridad + Calidad (OWASP, Secrets, CI, Default)
         continue-on-error: true
         run: |
           semgrep scan \
             --config p/owasp-top-ten \
             --config p/secrets \
             --config p/ci \
+            --config p/default \
             --json \
             --output reports/semgrep-raw.json \
             --timeout 300 \
@@ -145,7 +146,7 @@ jobs:
               <div class="no-findings">
                 <div class="no-findings-icon">✅</div>
                 <h3>Sin hallazgos</h3>
-                <p>Semgrep analizó el código con las reglas OWASP Top 10, Secrets y CI sin encontrar problemas.</p>
+                <p>Semgrep analizó el código con las reglas OWASP Top 10, Secrets, CI y Calidad sin encontrar problemas.</p>
               </div>"""
 
             table = f"""
@@ -275,8 +276,8 @@ jobs:
                 <div class="card card-info"><div class="card-num num-info">{counts.get("INFO", 0)}</div><div class="card-label">Info</div></div>
               </div>
               <div class="section">
-                <div class="rules-info">
-                  Reglas aplicadas: <strong>p/owasp-top-ten</strong> · <strong>p/secrets</strong> · <strong>p/ci</strong>
+                 <div class="rules-info">
+                  Reglas aplicadas: <strong>p/owasp-top-ten</strong> · <strong>p/secrets</strong> · <strong>p/ci</strong> · <strong>p/default (Calidad y Bugs)</strong>
                   — Cobertura multi-lenguaje (Python, JS/TS, Java, Go, PHP, Ruby, C/C++, Kotlin, Swift y más)
                 </div>
                 <div class="section-title">Hallazgos — Semgrep SAST</div>
