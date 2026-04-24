@@ -16,6 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      issues: write
 
     steps:
       - name: Checkout repositorio
@@ -302,3 +303,70 @@ jobs:
           path: reports/${{ github.event.repository.name }}/
           retention-days: 30
           if-no-files-found: warn
+
+      - name: Crear Issues en GitHub (Solo Severidad ERROR)
+        if: always()
+        continue-on-error: true
+        env:
+          # Inyectamos el token nativo de GitHub para poder usar la CLI (gh)
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cat << 'EOF' > create_issues.py
+          import json, os, subprocess
+
+          raw_path = 'reports/semgrep-raw.json'
+          if not os.path.exists(raw_path):
+              print("[Issues] No se encontró el archivo JSON de Semgrep.")
+              exit(0)
+
+          try:
+              data = json.load(open(raw_path, encoding='utf-8'))
+              results = data.get('results', [])
+          except Exception as e:
+              print(f"[Issues] Error leyendo el JSON: {e}")
+              exit(0)
+
+          # 1. Obtener lista de issues abiertos para NO duplicar
+          try:
+              cmd_list = ['gh', 'issue', 'list', '--state', 'open', '--json', 'title']
+              existing_issues_raw = subprocess.check_output(cmd_list).decode('utf-8')
+              existing_titles = [i['title'] for i in json.loads(existing_issues_raw)]
+          except Exception as e:
+              print(f"[WARN] No se pudieron leer los issues actuales. Revisa los permisos. {e}")
+              existing_titles = []
+
+          # 2. Recorrer hallazgos y crear issues solo para los más graves (ERROR)
+          issues_creados = 0
+          for r in results:
+              sev = r.get('extra', {}).get('severity', 'INFO').upper()
+              
+              if sev == 'ERROR': # Filtramos solo lo crítico
+                  rule = r.get('check_id', 'unknown').split('.')[-1]
+                  filepath = r.get('path', 'unknown')
+                  line = r.get('start', {}).get('line', '?')
+                  msg = r.get('extra', {}).get('message', '')[:300]
+                  
+                  # Título estandarizado para identificar duplicados fácilmente
+                  title = f"🚨 [SAST] Semgrep: {rule} en {filepath}"
+                  
+                  if title not in existing_titles:
+                      body = (f"### 🛡️ Hallazgo de Seguridad Automatizado\n\n"
+                              f"**Herramienta**: Semgrep\n"
+                              f"**Severidad**: 🔴 {sev}\n"
+                              f"**Archivo**: `{filepath}` (Línea: {line})\n"
+                              f"**Regla**: `{rule}`\n\n"
+                              f"**Descripción**:\n> {msg}\n\n"
+                              f"Revise el reporte HTML adjunto en los Artifacts de Actions para más detalles.")
+                      
+                      print(f"[Issues] Creando ticket: {title}")
+                      try:
+                          subprocess.run(['gh', 'issue', 'create', '--title', title, '--body', body, '--label', 'security,bug'])
+                          existing_titles.append(title) # Lo agregamos a la lista en memoria para no duplicar en este mismo loop
+                          issues_creados += 1
+                      except Exception as e:
+                          print(f"[WARN] Falló la creación del issue: {e}")
+
+          print(f"[Issues] Se crearon {issues_creados} tickets nuevos.")
+          EOF
+          
+          python3 create_issues.py
