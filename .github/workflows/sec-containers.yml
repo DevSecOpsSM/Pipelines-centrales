@@ -300,6 +300,72 @@ jobs:
           retention-days: 30
           if-no-files-found: warn
 
+      - name: Crear Issues en GitHub (KICS - Límite 10 por Severidad)
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cat << 'EOF' > create_issues_kics.py
+          import json, os, subprocess
+
+          raw_path = 'kics-output/kics-results.json'
+          if not os.path.exists(raw_path):
+              exit(0)
+
+          try:
+              data = json.load(open(raw_path, encoding='utf-8'))
+              queries = data.get('queries', [])
+          except Exception:
+              exit(0)
+
+          try:
+              cmd_list = ['gh', 'issue', 'list', '--state', 'open', '--json', 'title']
+              existing_titles = [i['title'] for i in json.loads(subprocess.check_output(cmd_list).decode('utf-8'))]
+          except:
+              existing_titles = []
+
+          MAX_ISSUES_PER_SEV = 10
+          creados_por_sev = {'CRITICAL': 0, 'HIGH': 0, 'MEDIUM': 0, 'LOW': 0, 'INFO': 0}
+
+          for q in queries:
+              sev = q.get('severity', 'INFO').upper()
+              
+              if creados_por_sev.get(sev, 0) >= MAX_ISSUES_PER_SEV:
+                  continue
+                  
+              qname = q.get('query_name', 'unknown')
+              desc = q.get('description', '')[:300]
+              files = q.get('files', [])
+              
+              # Formatear la lista de archivos afectados
+              files_str = "\n".join([f"- `{f.get('file_name', '?')}` (Línea: {f.get('line', '?')})" for f in files[:5]])
+              if len(files) > 5:
+                  files_str += f"\n- ...y {len(files)-5} archivos más."
+                  
+              title = f"🚨 [IaC] KICS: {qname}"
+              
+              if title not in existing_titles:
+                  body = (f"### 🏗️ Misconfiguración de Infraestructura\n\n"
+                          f"**Herramienta**: KICS\n"
+                          f"**Severidad**: {sev}\n"
+                          f"**Vulnerabilidad**: `{qname}`\n\n"
+                          f"**Archivos afectados**:\n{files_str}\n\n"
+                          f"**Descripción**:\n> {desc}\n\n"
+                          f"Revise el reporte PDF/HTML adjunto para la solución sugerida.")
+                  
+                  try:
+                      subprocess.run(['gh', 'issue', 'create', '--title', title, '--body', body], check=True)
+                      existing_titles.append(title)
+                      creados_por_sev[sev] += 1
+                  except:
+                      pass
+
+          print(f"[Issues KICS] Completado. CRITICAL: {creados_por_sev['CRITICAL']}, HIGH: {creados_por_sev['HIGH']}, MEDIUM: {creados_por_sev['MEDIUM']}")
+          EOF
+          
+          python3 create_issues_kics.py
+
   # ─────────────────────────────────────────────────────────────────────────
   # JOB 2 · HADOLINT — Linter de Dockerfiles
   # ─────────────────────────────────────────────────────────────────────────
@@ -796,6 +862,10 @@ jobs:
           pip install deep-translator --quiet 2>/dev/null || true
           python3 -c "$PYTHON_SCRIPT"
 
+      - name: Generar JSON de Trivy para Issues
+        continue-on-error: true
+        run: trivy fs . --format json --output reports/trivy-raw.json || true
+
       - name: Subir reportes Trivy
         if: always()
         uses: actions/upload-artifact@v4
@@ -804,3 +874,74 @@ jobs:
           path: reports/${{ github.event.repository.name }}/
           retention-days: 30
           if-no-files-found: warn
+       
+
+      - name: Crear Issues en GitHub (Trivy - Límite 10 por Severidad)
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cat << 'EOF' > create_issues_trivy.py
+          import json, os, subprocess
+
+          raw_path = 'reports/trivy-raw.json'
+          if not os.path.exists(raw_path):
+              exit(0)
+
+          try:
+              data = json.load(open(raw_path, encoding='utf-8'))
+              results = data.get('Results', [])
+          except Exception:
+              exit(0)
+
+          try:
+              cmd_list = ['gh', 'issue', 'list', '--state', 'open', '--json', 'title']
+              existing_titles = [i['title'] for i in json.loads(subprocess.check_output(cmd_list).decode('utf-8'))]
+          except:
+              existing_titles = []
+
+          MAX_ISSUES_PER_SEV = 10
+          creados_por_sev = {'CRITICAL': 0, 'HIGH': 0, 'MEDIUM': 0, 'LOW': 0, 'UNKNOWN': 0}
+
+          for r in results:
+              target = r.get('Target', 'unknown')
+              for v in r.get('Vulnerabilities', []):
+                  sev = v.get('Severity', 'UNKNOWN').upper()
+                  
+                  if creados_por_sev.get(sev, 0) >= MAX_ISSUES_PER_SEV:
+                      continue
+                      
+                  vid = v.get('VulnerabilityID', 'unknown')
+                  pkg = v.get('PkgName', 'unknown')
+                  inst = v.get('InstalledVersion', 'unknown')
+                  fixed = v.get('FixedVersion', 'N/A')
+                  title_desc = v.get('Title', v.get('Description', ''))[:200]
+                  
+                  title = f"🚨 [SCA] Trivy: {vid} en {pkg}"
+                  
+                  if title not in existing_titles:
+                      body = (f"### 📦 Vulnerabilidad en Dependencias / Contenedor\n\n"
+                              f"**Herramienta**: Trivy\n"
+                              f"**Severidad**: {sev}\n"
+                              f"**CVE**: `{vid}`\n"
+                              f"**Objetivo (Target)**: `{target}`\n\n"
+                              f"| Paquete | Instalada | Corregida en |\n"
+                              f"|---|---|---|\n"
+                              f"| `{pkg}` | `{inst}` | `{fixed}` |\n\n"
+                              f"**Descripción**:\n> {title_desc}\n\n"
+                              f"Revise el reporte adjunto para más información.")
+                      
+                      try:
+                          subprocess.run(['gh', 'issue', 'create', '--title', title, '--body', body], check=True)
+                          existing_titles.append(title)
+                          creados_por_sev[sev] += 1
+                      except:
+                          pass
+
+          print(f"[Issues Trivy] Completado. CRITICAL: {creados_por_sev['CRITICAL']}, HIGH: {creados_por_sev['HIGH']}")
+          EOF
+          
+          python3 create_issues_trivy.py
+
+      
