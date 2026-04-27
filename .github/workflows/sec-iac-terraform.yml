@@ -1,0 +1,125 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# SSDLC · Etapa IaC Especializada — Terraform (Checkov)
+# Herramienta: Checkov (Prisma Cloud)
+# Enfoque: Análisis de contexto y grafos para infraestructura cloud.
+# ═══════════════════════════════════════════════════════════════════════════
+
+name: Security - IaC (Checkov)
+
+on:
+  workflow_call:
+
+jobs:
+  checkov:
+    name: "Checkov — IaC Terraform Security"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+
+    steps:
+      - name: Checkout repositorio
+        uses: actions/checkout@v4
+
+      - name: Crear directorio de reportes
+        run: mkdir -p "reports/${{ github.event.repository.name }}"
+
+      - name: Instalar Checkov
+        run: pip install checkov --quiet
+
+      - name: Ejecutar Checkov (Exclusivo Terraform)
+        continue-on-error: true
+        run: |
+          checkov -d . \
+            --framework terraform \
+            --output json > reports/checkov-raw.json || true
+            
+          # Garantizar archivo JSON válido si no hay salida
+          if [ ! -s reports/checkov-raw.json ]; then
+            echo '{"results":{"passed_checks":[],"failed_checks":[]}}' > reports/checkov-raw.json
+          fi
+
+      - name: Subir reporte Checkov
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-iac-checkov
+          path: reports/${{ github.event.repository.name }}/
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Crear Issues en GitHub (Checkov - Límite 10)
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cat << 'EOF' > create_issues_checkov.py
+          import json, os, subprocess
+
+          raw_path = 'reports/checkov-raw.json'
+          if not os.path.exists(raw_path):
+              exit(0)
+
+          try:
+              data = json.load(open(raw_path, encoding='utf-8'))
+              
+              # Checkov puede devolver una lista o un diccionario dependiendo de si escanea 1 o más frameworks
+              reports = data if isinstance(data, list) else [data]
+              
+              failed_checks = []
+              for rep in reports:
+                  if 'results' in rep and 'failed_checks' in rep['results']:
+                      failed_checks.extend(rep['results']['failed_checks'])
+          except Exception as e:
+              print(f"[Issues Checkov] Error procesando JSON: {e}")
+              exit(0)
+
+          # 1. Obtener lista de issues abiertos para NO duplicar
+          try:
+              cmd_list = ['gh', 'issue', 'list', '--state', 'open', '--json', 'title']
+              existing_titles = [i['title'] for i in json.loads(subprocess.check_output(cmd_list).decode('utf-8'))]
+          except:
+              existing_titles = []
+
+          MAX_ISSUES = 10
+          creados = 0
+
+          # 2. Recorrer hallazgos y crear issues
+          for check in failed_checks:
+              if creados >= MAX_ISSUES:
+                  break
+                  
+              check_id = check.get('check_id', 'unknown')
+              check_name = check.get('check_name', 'Sin descripción')
+              file_path = check.get('file_path', 'unknown')
+              resource = check.get('resource', 'unknown')
+              
+              # La versión Open Source de Checkov no siempre incluye 'severity' nativamente sin API key.
+              # Si no viene, asumimos HIGH por defecto para requerir atención de arquitectura.
+              sev = check.get('severity') or 'HIGH'
+              
+              title = f"🚨 [IaC] Checkov: {check_id} en {resource}"
+              
+              if title not in existing_titles:
+                  body = (f"### 🏗️ Vulnerabilidad de Infraestructura como Código (Terraform)\n\n"
+                          f"**Herramienta**: Checkov\n"
+                          f"**Severidad**: {sev}\n"
+                          f"**Recurso**: `{resource}`\n"
+                          f"**Archivo**: `{file_path}`\n\n"
+                          f"**Regla**: `{check_id}`\n"
+                          f"**Descripción**:\n> {check_name}\n\n"
+                          f"Revise el código de Terraform para aplicar las mejores prácticas de seguridad en la nube.")
+                  
+                  try:
+                      subprocess.run(['gh', 'issue', 'create', '--title', title, '--body', body], check=True)
+                      existing_titles.append(title)
+                      creados += 1
+                      print(f"[Issues] Creado ticket: {title}")
+                  except:
+                      pass
+
+          print(f"[Issues Checkov] Proceso completado. Tickets nuevos creados: {creados}")
+          EOF
+          
+          python3 create_issues_checkov.py
