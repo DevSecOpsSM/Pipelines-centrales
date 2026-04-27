@@ -28,8 +28,8 @@ pipelines-centrales/                    ← Este repositorio (Internal)
 
 La estrategia se basa en el principio de **Shift Left** (desplazar la seguridad a la izquierda), detectando vulnerabilidades en el mismo momento en que el desarrollador hace un *Push* o *Pull Request*.
 
-*(Inserta aquí la imagen de tu diagrama)*
-![Diagrama de Arquitectura DevSecOps](docs/Diagrama Git hub actions.jpg)
+
+(docs/Diagrama Git hub actions.jpg)
 
 ### Componentes de la Arquitectura:
 1. **App Repo (El Disparador):** El repositorio del proyecto invoca los flujos de este repositorio central.
