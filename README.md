@@ -22,7 +22,22 @@ pipelines-centrales/                    ← Este repositorio (Internal)
 └── examples/
     └── seguridad.yml                   ← Archivo consumidor de ejemplo
 ```
+---
 
+## 🏛️ Arquitectura del Sistema
+
+La estrategia se basa en el principio de **Shift Left** (desplazar la seguridad a la izquierda), detectando vulnerabilidades en el mismo momento en que el desarrollador hace un *Push* o *Pull Request*.
+
+*(Inserta aquí la imagen de tu diagrama)*
+![Diagrama de Arquitectura DevSecOps](docs/diagrama_arquitectura.jpg)
+
+### Componentes de la Arquitectura:
+1. **App Repo (El Disparador):** El repositorio del proyecto invoca los flujos de este repositorio central.
+2. **Pipelines Centrales (Motores de Análisis):** Se ejecutan herramientas líderes de la industria en formato "offline" y "auditoría".
+3. **Motor de Procesamiento (Python):** Estandariza los resultados crudos de las herramientas en reportes útiles.
+4. **Remediación (Salidas):** Genera Issues automatizados para desarrolladores y reportes PDF para auditores.
+
+---
 ## Herramientas por etapa (SSDLC)
 
 | Etapa | Workflow | Herramientas | Propósito |
