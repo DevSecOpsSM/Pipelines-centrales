@@ -1,0 +1,961 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# SSDLC · Etapa 4 — Seguridad de Contenedores e IaC
+# Herramientas:
+#   - KICS     : Escaneo de IaC (Dockerfiles, K8s, Terraform, etc.)
+#   - Hadolint : Linter de Dockerfiles (mejores prácticas)
+#   - Trivy    : CVEs en imagen Docker y filesystem
+# Modo Auditoría: reporta hallazgos sin bloquear el pipeline
+# Trivy HTML: descarga plantilla vía curl (evita errores de path en Docker)
+# ═══════════════════════════════════════════════════════════════════════════
+
+name: Security - Containers & IaC
+
+on:
+  workflow_call:
+
+jobs:
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # JOB 1 · KICS — Keeping Infrastructure as Code Secure (Checkmarx)
+  # ─────────────────────────────────────────────────────────────────────────
+  kics:
+    name: "KICS — IaC Security Scan"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+ 
+
+    steps:
+      - name: Checkout repositorio
+        uses: actions/checkout@v4
+
+      - name: Crear directorio de reportes
+        run: mkdir -p "reports/${{ github.event.repository.name }}"
+
+      - name: Ejecutar KICS (Docker)
+        continue-on-error: true
+        run: |
+          mkdir -p kics-output
+          # Quitamos el 'tail -5' para poder ver los logs reales si algo falla.
+          docker run --rm \
+            -v "$PWD:/path" \
+            checkmarx/kics:latest \
+            scan \
+            --path /path \
+            --report-formats json \
+            --output-path /path/kics-output \
+            --output-name kics-results \
+            --ignore-on-exit results \
+            --exclude-paths /path/kics-output,/path/.git \
+            || true
+
+          # Garantizar archivo JSON válido si KICS falló críticamente
+          if [ ! -s kics-output/kics-results.json ]; then
+            echo '{"kics_version":"unknown","queries":[],"total_counter":0,"severity_counters":{"CRITICAL":0,"HIGH":0,"MEDIUM":0,"LOW":0,"INFO":0}}' \
+              > kics-output/kics-results.json
+          fi
+
+      - name: Generar reporte HTML
+        if: always()
+        env:
+          REPO_NAME: ${{ github.event.repository.name }}
+          REPO_FULL: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          REF: ${{ github.ref_name }}
+          PYTHON_SCRIPT: |
+            import json, html, os
+            from datetime import datetime
+
+            repo_name = os.environ['REPO_NAME']
+            repo_full = os.environ['REPO_FULL']
+            sha       = os.environ['SHA'][:7]
+            ref       = os.environ['REF']
+            fecha     = datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')
+            out_dir   = f"reports/{repo_name}"
+
+            data = {}
+            try:
+                data = json.load(open("kics-output/kics-results.json", encoding="utf-8"))
+            except Exception:
+                pass
+
+            queries  = data.get("queries", [])
+            counters = data.get("severity_counters", {})
+            # Usar len(queries) como fuente de verdad; total_counter puede ser 0 en algunas versiones
+            total    = len(queries) or data.get("total_counter", 0)
+            if not counters and queries:
+                for q in queries:
+                    sev = q.get("severity", "INFO").upper()
+                    counters[sev] = counters.get(sev, 0) + 1
+
+            def translate_es(text):
+                if not text or len(str(text).strip()) < 5:
+                    return str(text)
+                try:
+                    from deep_translator import GoogleTranslator
+                    result = GoogleTranslator(source='auto', target='es').translate(str(text)[:500])
+                    return result if result else str(text)
+                except Exception:
+                    return str(text)
+
+            def tdesc(en):
+                es = translate_es(en)
+                if es != en:
+                    return (f'<span title="EN: {html.escape(en)}" '
+                            f'style="cursor:help;border-bottom:1px dashed #444">'
+                            f'{html.escape(es)}</span>'
+                            f' <span style="font-size:10px;color:#58a6ff">🌐</span>')
+                return html.escape(en)
+
+            SEV_CSS = {
+                "CRITICAL": "badge-critical",
+                "HIGH":     "badge-high",
+                "MEDIUM":   "badge-medium",
+                "LOW":      "badge-low",
+                "INFO":     "badge-info",
+            }
+
+            rows = ""
+            for q in queries:
+                sev      = q.get("severity", "INFO").upper()
+                css      = SEV_CSS.get(sev, "badge-info")
+                qname    = html.escape(q.get("query_name", "N/A"))
+                category = html.escape(q.get("category", "N/A"))
+                platform = html.escape(q.get("platform", "N/A"))
+                desc     = tdesc(q.get("description", "")[:200])
+                files    = q.get("files", [])
+                files_html = "".join(
+                    f'<div class="file-path">{html.escape(str(f.get("file_name","?")))}'
+                    f':{f.get("line","?")}</div>'
+                    for f in files[:5]
+                )
+                if len(files) > 5:
+                    files_html += f'<div style="color:#8b949e;font-size:11px">+{len(files)-5} más...</div>'
+                rows += f"""<tr>
+                  <td class="col-sev"><span class="badge {css}">{sev}</span></td>
+                  <td class="col-vuln"><strong>{qname}</strong><br>
+                    <span style="font-size:11px;color:#58a6ff">{category}</span></td>
+                  <td class="col-plat"><span style="font-size:12px;color:#8b949e">{platform}</span></td>
+                  <td class="col-files">{files_html}</td>
+                  <td class="col-desc" style="font-size:12px;color:#8b949e">{desc}</td>
+                </tr>\n"""
+
+            no_findings = "" if total > 0 else """
+              <div class="no-findings">
+                <div class="no-findings-icon">✅</div>
+                <h3>Sin hallazgos de seguridad IaC</h3>
+                <p>KICS no detectó misconfiguraciones en los archivos de infraestructura analizados.</p>
+              </div>"""
+
+            table = f"""
+              <table>
+                <thead>
+                  <tr>
+                    <th class="col-sev">Severidad</th><th class="col-vuln">Vulnerabilidad</th><th class="col-plat">Plataforma</th>
+                    <th class="col-files">Archivos afectados</th><th class="col-desc">Descripción</th>
+                  </tr>
+                </thead>
+                <tbody>{rows}</tbody>
+              </table>""" if total > 0 else ""
+
+            import base64
+            logo_html = '<h2 style="color:#00F1C7;margin-bottom:10px;">Simon</h2>'
+            try:
+                if os.path.exists("image/logo_claro.png"):
+                    with open("image/logo_claro.png","rb") as _lf:
+                        _lb64 = base64.b64encode(_lf.read()).decode()
+                    logo_html = f'<img src="data:image/png;base64,{_lb64}" alt="Simon" height="45">'
+            except Exception:
+                pass
+
+            report = f"""<!DOCTYPE html>
+            <html lang="es">
+            <head>
+              <meta charset="UTF-8">
+              <meta name="viewport" content="width=device-width,initial-scale=1.0">
+              <title>KICS IaC Report — {repo_name}</title>
+              <style>
+                *{{box-sizing:border-box;margin:0;padding:0}}
+                body{{font-family:'Segoe UI',system-ui,sans-serif;background:#1A1A1A;color:#E7E7E7}}
+                .header{{background:#000000;border-bottom:2px solid #00F1C7;padding:30px 40px;position:relative}}
+                .logo-container{{margin-bottom:15px}}
+                .tool-badge{{background:rgba(0,241,199,0.1);border:1px solid #00F1C7;color:#00F1C7;padding:6px 16px;border-radius:20px;font-size:13px;font-weight:700}}
+                .header h1{{font-size:26px;font-weight:700;color:#FFFFFF;margin-top:16px}}
+                .meta{{color:#B0B0B0;font-size:13px;margin-top:10px}}
+                .meta span{{margin-right:20px}}
+                .btn-pdf{{position:absolute;top:40px;right:40px;background:#00F1C7;color:#000;font-weight:bold;padding:10px 20px;border:none;border-radius:6px;cursor:pointer;font-size:14px;transition:0.2s}}
+                .btn-pdf:hover{{background:#00c4a0}}
+                .cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:16px;padding:30px;max-width:1100px;margin:0 auto}}
+                .card{{background:#373737;border-radius:8px;padding:20px;text-align:center;border-top:4px solid}}
+                .card-total{{border-top-color:#B0B0B0}}.card-critical{{border-top-color:#F63D3D}}
+                .card-high{{border-top-color:#FAD900}}.card-medium{{border-top-color:#00F1C7}}
+                .card-low{{border-top-color:#888888}}.card-info{{border-top-color:#4b8aba}}
+                .card-num{{font-size:34px;font-weight:800;line-height:1}}
+                .card-label{{font-size:11px;color:#B0B0B0;text-transform:uppercase;margin-top:8px;letter-spacing:1px}}
+                .num-total{{color:#FFFFFF}}.num-crit{{color:#F63D3D}}.num-high{{color:#FAD900}}
+                .num-med{{color:#00F1C7}}.num-low{{color:#888888}}.num-info{{color:#4b8aba}}
+                .section{{max-width:1100px;margin:0 auto 30px;padding:0 30px}}
+                .section-title{{font-size:16px;font-weight:600;color:#00F1C7;margin-bottom:14px;padding-bottom:8px;border-bottom:1px solid #373737}}
+                .wrap{{background:#000000;border:1px solid #373737;border-radius:8px;overflow:hidden}}
+                
+                table{{width:100%;border-collapse:collapse;table-layout:fixed}}
+                .col-sev{{width:12%}} .col-vuln{{width:25%}} .col-plat{{width:13%}} .col-files{{width:25%}} .col-desc{{width:25%}}
+                
+                thead{{background:#373737}}
+                th{{padding:14px 16px;color:#E7E7E7;font-size:12px;text-transform:uppercase;text-align:left;letter-spacing:0.5px}}
+                td{{padding:14px 16px;border-bottom:1px solid #373737;font-size:13px;vertical-align:top;color:#D1D1D1;word-wrap:break-word}}
+                tr:hover td{{background:#1A1A1A}}
+                .badge{{display:inline-block;padding:4px 12px;border-radius:12px;font-size:11px;font-weight:bold;text-transform:uppercase}}
+                .badge-critical{{background:rgba(246,61,61,0.15);color:#F63D3D;border:1px solid #F63D3D}}
+                .badge-high{{background:rgba(250,217,0,0.15);color:#FAD900;border:1px solid #FAD900}}
+                .badge-medium{{background:rgba(0,241,199,0.15);color:#00F1C7;border:1px solid #00F1C7}}
+                .badge-low{{background:rgba(136,136,136,0.15);color:#888888;border:1px solid #888888}}
+                .badge-info{{background:rgba(75,138,186,0.15);color:#4b8aba;border:1px solid #4b8aba}}
+                .file-path{{color:#888888;font-family:monospace;font-size:11px;margin-top:2px;word-break:break-all}}
+                .no-findings{{text-align:center;padding:80px 40px}}
+                .no-findings-icon{{font-size:60px;margin-bottom:16px}}
+                .no-findings h3{{font-size:20px;color:#4EDA56;margin-bottom:8px}}
+                .no-findings p{{color:#B0B0B0;font-size:14px}}
+                .footer{{text-align:center;padding:30px;color:#888888;font-size:12px;border-top:1px solid #373737;margin-top:20px}}
+                
+                /* ========================================================================= */
+                /* REGLAS ESPECÍFICAS PARA IMPRESIÓN (PDF)                                   */
+                /* ========================================================================= */
+                @media print {{
+                  @page {{ margin: 1.5cm; size: auto; }}
+                  body {{ 
+                    background: #FFFFFF !important; 
+                    color: #000000 !important; 
+                    -webkit-print-color-adjust: exact !important; 
+                    print-color-adjust: exact !important; 
+                  }}
+                  .header {{ background: #FFFFFF !important; border-bottom: 2px solid #00F1C7 !important; padding: 20px 0; }}
+                  .header h1 {{ color: #000000 !important; }}
+                  .btn-pdf {{ display: none !important; }}
+                  .cards {{ padding: 15px 0; gap: 10px; }}
+                  .card {{ background: #F6F6F6 !important; border: 1px solid #D1D1D1 !important; border-top: 4px solid !important; padding: 15px; page-break-inside: avoid; }}
+                  .num-total {{ color: #1A1A1A !important; }}
+                  .section {{ padding: 0; }}
+                  .wrap {{ border: 1px solid #D1D1D1 !important; background: #FFFFFF !important; }}
+                  
+                  /* Control estricto de la tabla para evitar rupturas */
+                  table {{ table-layout: fixed; width: 100%; }}
+                  thead {{ display: table-header-group; background: #F6F6F6 !important; }}
+                  tr {{ page-break-inside: avoid; page-break-after: auto; }}
+                  td {{ border-bottom: 1px solid #E7E7E7 !important; color: #1A1A1A !important; padding: 10px; vertical-align: middle; }}
+                  th {{ color: #373737 !important; border-bottom: 2px solid #D1D1D1 !important; padding: 10px; }}
+                  
+                  /* Arreglo de los badges y códigos en fondo blanco */
+                  .badge {{ border: none !important; padding: 4px 8px; font-size: 10px; }}
+                  .badge-critical {{ background: #F63D3D !important; color: #FFFFFF !important; }}
+                  .badge-high {{ background: #FAD900 !important; color: #000000 !important; }}
+                  .badge-medium {{ background: #00F1C7 !important; color: #000000 !important; }}
+                  .badge-low {{ background: #888888 !important; color: #FFFFFF !important; }}
+                  .badge-info {{ background: #4b8aba !important; color: #FFFFFF !important; }}
+                }}
+              </style>
+            </head>
+            <body>
+              <div class="header">
+                <button class="btn-pdf" onclick="window.print()">📥 Descargar PDF</button>
+                <div class="logo-container">{logo_html}</div>
+                <span class="tool-badge">KICS — IaC SECURITY</span>
+                <h1>Infrastructure as Code Security Report</h1>
+                <div class="meta">
+                  <span>📦 {html.escape(repo_full)}</span>
+                  <span>🌿 {html.escape(ref)}</span>
+                  <span>🔖 {sha}</span>
+                  <span>🕐 {fecha}</span>
+                </div>
+              </div>
+              <div class="cards">
+                <div class="card card-total"><div class="card-num num-total">{total}</div><div class="card-label">Total</div></div>
+                <div class="card card-critical"><div class="card-num num-crit">{counters.get("CRITICAL",0)}</div><div class="card-label">Critical</div></div>
+                <div class="card card-high"><div class="card-num num-high">{counters.get("HIGH",0)}</div><div class="card-label">High</div></div>
+                <div class="card card-medium"><div class="card-num num-med">{counters.get("MEDIUM",0)}</div><div class="card-label">Medium</div></div>
+                <div class="card card-low"><div class="card-num num-low">{counters.get("LOW",0)}</div><div class="card-label">Low</div></div>
+                <div class="card card-info"><div class="card-num num-info">{counters.get("INFO",0)}</div><div class="card-label">Info</div></div>
+              </div>
+              <div class="section">
+                <div class="section-title">Hallazgos — KICS (Dockerfiles · Kubernetes · Terraform · Ansible · Helm)</div>
+                <div class="wrap">{table}{no_findings}</div>
+              </div>
+              <div class="footer">Generado por <strong>pipelines-centrales</strong> · Equipo Cybersecurity · Simon · {fecha}</div>
+            </body>
+            </html>"""
+
+            out_path = f"{out_dir}/kics-report.html"
+            with open(out_path, "w", encoding="utf-8") as fh:
+                fh.write(report)
+            print(f"[KICS] {total} hallazgo(s) → {out_path}")
+        run: |
+          pip install deep-translator --quiet 2>/dev/null || true
+          python3 -c "$PYTHON_SCRIPT"
+
+      - name: Subir reporte KICS
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-containers-kics
+          path: reports/${{ github.event.repository.name }}/
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Crear Issues en GitHub (KICS - Límite 10 por Severidad)
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cat << 'EOF' > create_issues_kics.py
+          import json, os, subprocess
+
+          raw_path = 'kics-output/kics-results.json'
+          if not os.path.exists(raw_path):
+              exit(0)
+
+          try:
+              data = json.load(open(raw_path, encoding='utf-8'))
+              queries = data.get('queries', [])
+          except Exception:
+              exit(0)
+
+          try:
+              cmd_list = ['gh', 'issue', 'list', '--state', 'open', '--json', 'title']
+              existing_titles = [i['title'] for i in json.loads(subprocess.check_output(cmd_list).decode('utf-8'))]
+          except:
+              existing_titles = []
+
+          MAX_ISSUES_PER_SEV = 10
+          creados_por_sev = {'CRITICAL': 0, 'HIGH': 0, 'MEDIUM': 0, 'LOW': 0, 'INFO': 0}
+
+          for q in queries:
+              sev = q.get('severity', 'INFO').upper()
+              
+              if creados_por_sev.get(sev, 0) >= MAX_ISSUES_PER_SEV:
+                  continue
+                  
+              qname = q.get('query_name', 'unknown')
+              desc = q.get('description', '')[:300]
+              files = q.get('files', [])
+              
+              # Formatear la lista de archivos afectados
+              files_str = "\n".join([f"- `{f.get('file_name', '?')}` (Línea: {f.get('line', '?')})" for f in files[:5]])
+              if len(files) > 5:
+                  files_str += f"\n- ...y {len(files)-5} archivos más."
+                  
+              title = f"🚨 [IaC] KICS: {qname}"
+              
+              if title not in existing_titles:
+                  body = (f"### 🏗️ Misconfiguración de Infraestructura\n\n"
+                          f"**Herramienta**: KICS\n"
+                          f"**Severidad**: {sev}\n"
+                          f"**Vulnerabilidad**: `{qname}`\n\n"
+                          f"**Archivos afectados**:\n{files_str}\n\n"
+                          f"**Descripción**:\n> {desc}\n\n"
+                          f"Revise el reporte PDF/HTML adjunto para la solución sugerida.")
+                  
+                  try:
+                      subprocess.run(['gh', 'issue', 'create', '--title', title, '--body', body], check=True)
+                      existing_titles.append(title)
+                      creados_por_sev[sev] += 1
+                  except:
+                      pass
+
+          print(f"[Issues KICS] Completado. CRITICAL: {creados_por_sev['CRITICAL']}, HIGH: {creados_por_sev['HIGH']}, MEDIUM: {creados_por_sev['MEDIUM']}")
+
+          # --- LÓGICA DE BLOQUEO (QUALITY GATE) ---
+          if creados_por_sev['CRITICAL'] > 0 or creados_por_sev['HIGH'] > 0:
+              print("\n❌ ATENCIÓN: Se detectaron misconfiguraciones CRÍTICAS o ALTAS en la infraestructura (KICS).")
+              print("🛑 El pipeline fallará para bloquear el pase a producción.")
+              exit(1)
+          EOF
+          
+          python3 create_issues_kics.py
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # JOB 2 · HADOLINT — Linter de Dockerfiles
+  # ─────────────────────────────────────────────────────────────────────────
+  hadolint:
+    name: "Hadolint — Dockerfile Linter"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repositorio
+        uses: actions/checkout@v4
+
+      - name: Crear directorio de reportes
+        run: mkdir -p "reports/${{ github.event.repository.name }}"
+
+      - name: Instalar Hadolint
+        run: |
+          curl -sL \
+            https://github.com/hadolint/hadolint/releases/latest/download/hadolint-Linux-x86_64 \
+            -o /usr/local/bin/hadolint
+          chmod +x /usr/local/bin/hadolint
+          hadolint --version
+
+      - name: Escanear todos los Dockerfiles
+        continue-on-error: true
+        run: |
+          DOCKERFILES=$(find . -name "Dockerfile*" -not -path "./.git/*" -not -path "./reports/*" | sort)
+
+          if [ -z "$DOCKERFILES" ]; then
+            echo "[]" > reports/hadolint-raw.json
+            echo "[Hadolint] No se encontraron Dockerfiles"
+          else
+            echo "[Hadolint] Archivos encontrados:"
+            echo "$DOCKERFILES"
+            hadolint --format json $DOCKERFILES > reports/hadolint-raw.json 2>/dev/null || true
+
+            if [ ! -s reports/hadolint-raw.json ]; then
+              echo "[]" > reports/hadolint-raw.json
+            fi
+          fi
+
+      - name: Generar reporte HTML
+        if: always()
+        env:
+          REPO_NAME: ${{ github.event.repository.name }}
+          REPO_FULL: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          REF: ${{ github.ref_name }}
+          PYTHON_SCRIPT: |
+            import json, html, os
+            from datetime import datetime
+
+            repo_name = os.environ['REPO_NAME']
+            repo_full = os.environ['REPO_FULL']
+            sha       = os.environ['SHA'][:7]
+            ref       = os.environ['REF']
+            fecha     = datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')
+            out_dir   = f"reports/{repo_name}"
+
+            findings = []
+            try:
+                findings = json.load(open("reports/hadolint-raw.json", encoding="utf-8"))
+                if not isinstance(findings, list):
+                    findings = []
+            except Exception:
+                pass
+
+            def translate_es(text):
+                if not text or len(str(text).strip()) < 5:
+                    return str(text)
+                try:
+                    from deep_translator import GoogleTranslator
+                    result = GoogleTranslator(source='auto', target='es').translate(str(text)[:500])
+                    return result if result else str(text)
+                except Exception:
+                    return str(text)
+
+            def tdesc(en):
+                es = translate_es(en)
+                if es != en:
+                    return (f'<span title="EN: {html.escape(en)}" '
+                            f'style="cursor:help;border-bottom:1px dashed #444">'
+                            f'{html.escape(es)}</span>'
+                            f' <span style="font-size:10px;color:#58a6ff">🌐</span>')
+                return html.escape(en)
+
+            SEV_CSS = {
+                "error":   "badge-critical",
+                "warning": "badge-high",
+                "info":    "badge-medium",
+                "style":   "badge-low",
+            }
+            counts = {"error": 0, "warning": 0, "info": 0, "style": 0}
+            for f in findings:
+                lv = f.get("level", "info").lower()
+                counts[lv] = counts.get(lv, 0) + 1
+
+            total = len(findings)
+
+            rows = ""
+            for f in findings:
+                level    = f.get("level", "info").lower()
+                css      = SEV_CSS.get(level, "badge-low")
+                code     = html.escape(str(f.get("code", "?")))
+                msg      = tdesc(str(f.get("message", ""))[:200])
+                file_raw = str(f.get("file", "?"))
+                file_disp = html.escape(file_raw.lstrip("./"))
+                line     = f.get("line", "?")
+                col      = f.get("column", "")
+                loc      = f"{file_disp}:{line}" + (f":{col}" if col else "")
+                rows += f"""<tr>
+                  <td><span class="badge {css}">{level.upper()}</span></td>
+                  <td><a href="https://github.com/hadolint/hadolint/wiki/{code}"
+                         style="color:#58a6ff;text-decoration:none"
+                         target="_blank">{code}</a></td>
+                  <td class="file-path">{loc}</td>
+                  <td style="font-size:13px">{msg}</td>
+                </tr>\n"""
+
+            no_findings = "" if total > 0 else """
+              <div class="no-findings">
+                <div class="no-findings-icon">✅</div>
+                <h3>Sin problemas en Dockerfiles</h3>
+                <p>Hadolint no encontró violaciones de mejores prácticas, o no hay Dockerfiles en el repositorio.</p>
+              </div>"""
+
+            table = f"""
+              <table>
+                <thead>
+                  <tr>
+                    <th>Nivel</th><th>Código</th><th>Archivo:Línea</th><th>Descripción</th>
+                  </tr>
+                </thead>
+                <tbody>{rows}</tbody>
+              </table>""" if total > 0 else ""
+
+            import base64 as _b64
+            _logo = '<h2 style="color:#00F1C7;margin-bottom:10px;">Simon</h2>'
+            try:
+                if os.path.exists("image/logo_claro.png"):
+                    with open("image/logo_claro.png","rb") as _lf:
+                        _logo = f'<img src="data:image/png;base64,{_b64.b64encode(_lf.read()).decode()}" alt="Simon" height="45">'
+            except Exception:
+                pass
+
+            report = f"""<!DOCTYPE html>
+            <html lang="es">
+            <head>
+              <meta charset="UTF-8">
+              <meta name="viewport" content="width=device-width,initial-scale=1.0">
+              <title>Hadolint Report — {repo_name}</title>
+              <style>
+                *{{box-sizing:border-box;margin:0;padding:0}}
+                body{{font-family:'Segoe UI',system-ui,sans-serif;background:#1A1A1A;color:#E7E7E7}}
+                .header{{background:#000000;border-bottom:2px solid #00F1C7;padding:30px 40px;position:relative}}
+                .logo-container{{margin-bottom:15px}}
+                .tool-badge{{background:rgba(0,241,199,0.1);border:1px solid #00F1C7;color:#00F1C7;padding:6px 16px;border-radius:20px;font-size:13px;font-weight:700}}
+                .header h1{{font-size:26px;font-weight:700;color:#FFFFFF;margin-top:16px}}
+                .meta{{color:#B0B0B0;font-size:13px;margin-top:10px}}
+                .meta span{{margin-right:20px}}
+                .btn-pdf{{position:absolute;top:40px;right:40px;background:#00F1C7;color:#000;font-weight:bold;padding:10px 20px;border:none;border-radius:6px;cursor:pointer;font-size:14px}}
+                .cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:16px;padding:30px;max-width:1100px;margin:0 auto}}
+                .card{{background:#373737;border-radius:8px;padding:20px;text-align:center;border-top:4px solid}}
+                .card-total{{border-top-color:#B0B0B0}}.card-error{{border-top-color:#F63D3D}}
+                .card-warning{{border-top-color:#FAD900}}.card-info{{border-top-color:#00F1C7}}.card-style{{border-top-color:#888888}}
+                .card-num{{font-size:36px;font-weight:800;line-height:1}}
+                .card-label{{font-size:11px;color:#B0B0B0;text-transform:uppercase;margin-top:8px;letter-spacing:1px}}
+                .num-total{{color:#FFFFFF}}.num-error{{color:#F63D3D}}.num-warn{{color:#FAD900}}
+                .num-info{{color:#00F1C7}}.num-style{{color:#888888}}
+                .section{{max-width:1100px;margin:0 auto 30px;padding:0 30px}}
+                .section-title{{font-size:16px;font-weight:600;color:#00F1C7;margin-bottom:14px;padding-bottom:8px;border-bottom:1px solid #373737}}
+                .wrap{{background:#000000;border:1px solid #373737;border-radius:8px;overflow:hidden}}
+                table{{width:100%;border-collapse:collapse}}
+                thead{{background:#373737}}
+                th{{padding:14px 16px;color:#E7E7E7;font-size:12px;text-transform:uppercase;text-align:left;letter-spacing:0.5px}}
+                td{{padding:14px 16px;border-bottom:1px solid #373737;font-size:13px;vertical-align:top;color:#D1D1D1}}
+                tr:hover td{{background:#1A1A1A}}
+                .badge{{display:inline-block;padding:4px 12px;border-radius:12px;font-size:11px;font-weight:bold;text-transform:uppercase}}
+                .badge-critical{{background:rgba(246,61,61,0.15);color:#F63D3D;border:1px solid #F63D3D}}
+                .badge-high{{background:rgba(250,217,0,0.15);color:#FAD900;border:1px solid #FAD900}}
+                .badge-medium{{background:rgba(0,241,199,0.15);color:#00F1C7;border:1px solid #00F1C7}}
+                .badge-low{{background:rgba(136,136,136,0.15);color:#888888;border:1px solid #888888}}
+                .file-path{{color:#888888;font-family:monospace;font-size:12px}}
+                .no-findings{{text-align:center;padding:80px 40px}}
+                .no-findings-icon{{font-size:60px;margin-bottom:16px}}
+                .no-findings h3{{font-size:20px;color:#4EDA56;margin-bottom:8px}}
+                .no-findings p{{color:#B0B0B0;font-size:14px}}
+                .footer{{text-align:center;padding:30px;color:#888888;font-size:12px;border-top:1px solid #373737;margin-top:20px}}
+                @media print{{body{{background:#FFF!important;color:#000!important}}.header{{background:#FFF!important}}.btn-pdf{{display:none!important}}.wrap{{background:#FFF!important}}thead{{background:#F6F6F6!important}}th{{color:#373737!important}}td{{color:#1A1A1A!important}}.card{{background:#F6F6F6!important}}}}
+              </style>
+            </head>
+            <body>
+              <div class="header">
+                <button class="btn-pdf" onclick="window.print()">📥 Descargar PDF</button>
+                <div class="logo-container">{_logo}</div>
+                <span class="tool-badge">HADOLINT — DOCKERFILE LINTER</span>
+                <h1>Dockerfile Best Practices Report</h1>
+                <div class="meta">
+                  <span>📦 {html.escape(repo_full)}</span>
+                  <span>🌿 {html.escape(ref)}</span>
+                  <span>🔖 {sha}</span>
+                  <span>🕐 {fecha}</span>
+                </div>
+              </div>
+              <div class="cards">
+                <div class="card card-total"><div class="card-num num-total">{total}</div><div class="card-label">Total</div></div>
+                <div class="card card-error"><div class="card-num num-error">{counts.get("error",0)}</div><div class="card-label">Error</div></div>
+                <div class="card card-warning"><div class="card-num num-warn">{counts.get("warning",0)}</div><div class="card-label">Warning</div></div>
+                <div class="card card-info"><div class="card-num num-info">{counts.get("info",0)}</div><div class="card-label">Info</div></div>
+                <div class="card card-style"><div class="card-num num-style">{counts.get("style",0)}</div><div class="card-label">Style</div></div>
+              </div>
+              <div class="section">
+                <div class="section-title">Hallazgos — Hadolint (Dockerfile linter)</div>
+                <div class="wrap">{table}{no_findings}</div>
+              </div>
+              <div class="footer">Generado por <strong>pipelines-centrales</strong> · Equipo Cybersecurity · Simon · {fecha}</div>
+            </body>
+            </html>"""
+
+            out_path = f"{out_dir}/hadolint-report.html"
+            with open(out_path, "w", encoding="utf-8") as fh:
+                fh.write(report)
+            print(f"[Hadolint] {total} hallazgo(s) → {out_path}")
+        run: |
+          pip install deep-translator --quiet 2>/dev/null || true
+          python3 -c "$PYTHON_SCRIPT"
+
+      - name: Subir reporte Hadolint
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-containers-hadolint
+          path: reports/${{ github.event.repository.name }}/
+          retention-days: 30
+          if-no-files-found: warn
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # JOB 3 · TRIVY — Escaneo de filesystem e imagen Docker
+  # ─────────────────────────────────────────────────────────────────────────
+  trivy:
+    name: "Trivy — Container & Filesystem Scan"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+
+    steps:
+      - name: Checkout repositorio
+        uses: actions/checkout@v4
+
+      - name: Crear directorio de reportes
+        run: mkdir -p "reports/${{ github.event.repository.name }}"
+
+      - name: Instalar Trivy
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+            | sh -s -- -b /usr/local/bin
+          trivy --version
+
+      - name: Descargar plantilla HTML de Trivy
+        run: |
+          curl -sfL \
+            https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/html.tpl \
+            -o /tmp/trivy-html.tpl
+          echo "[Trivy] Plantilla HTML descargada: $(wc -c < /tmp/trivy-html.tpl) bytes"
+
+      - name: Trivy — Escaneo de filesystem
+        continue-on-error: true
+        run: |
+          trivy fs . \
+            --severity CRITICAL,HIGH,MEDIUM,LOW \
+            --format template \
+            --template "@/tmp/trivy-html.tpl" \
+            --output "reports/${{ github.event.repository.name }}/trivy-fs-report.html" \
+            --exit-code 0 \
+            --timeout 10m \
+            2>&1 | tail -5 || true
+
+      - name: Trivy — Escaneo de imagen Docker
+        continue-on-error: true
+        run: |
+          if find . -name "Dockerfile" -not -path "./.git/*" | grep -q .; then
+            echo "[Trivy] Dockerfile encontrado — construyendo imagen..."
+            docker build -t trivy-local-scan:latest . --quiet 2>/dev/null || true
+
+            trivy image \
+              --severity CRITICAL,HIGH,MEDIUM,LOW \
+              --format template \
+              --template "@/tmp/trivy-html.tpl" \
+              --output "reports/${{ github.event.repository.name }}/trivy-image-report.html" \
+              --exit-code 0 \
+              --timeout 10m \
+              trivy-local-scan:latest 2>&1 | tail -5 || true
+          else
+            echo "[Trivy] Sin Dockerfile — omitiendo escaneo de imagen"
+          fi
+
+      - name: Fallback JSON + HTML si la plantilla falló
+        if: always()
+        env:
+          REPO_NAME: ${{ github.event.repository.name }}
+          REPO_FULL: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          REF: ${{ github.ref_name }}
+          PYTHON_SCRIPT: |
+            import json, html, os
+            from datetime import datetime
+
+            repo_name = os.environ['REPO_NAME']
+            repo_full = os.environ['REPO_FULL']
+            sha       = os.environ['SHA'][:7]
+            ref       = os.environ['REF']
+            fecha     = datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')
+            out_dir   = f"reports/{repo_name}"
+
+            html_path = os.path.join(out_dir, "trivy-fs-report.html")
+            if os.path.exists(html_path) and os.path.getsize(html_path) > 500:
+                print("[Trivy] Reporte HTML nativo OK — sin fallback necesario")
+                exit(0)
+
+            print("[Trivy] Generando reporte HTML desde JSON...")
+
+            results = []
+            try:
+                data = json.load(open("reports/trivy-raw.json", encoding="utf-8"))
+                for r in data.get("Results", []):
+                    target = r.get("Target", "?")
+                    for v in r.get("Vulnerabilities", []) or []:
+                        v["_target"] = target
+                        results.append(v)
+            except Exception as e:
+                print(f"[Trivy] Error leyendo JSON: {e}")
+
+            def translate_es(text):
+                if not text or len(str(text).strip()) < 5:
+                    return str(text)
+                try:
+                    from deep_translator import GoogleTranslator
+                    result = GoogleTranslator(source='auto', target='es').translate(str(text)[:500])
+                    return result if result else str(text)
+                except Exception:
+                    return str(text)
+
+            def tdesc(en):
+                es = translate_es(en)
+                if es != en:
+                    return (f'<span title="EN: {html.escape(en)}" '
+                            f'style="cursor:help;border-bottom:1px dashed #444">'
+                            f'{html.escape(es)}</span>'
+                            f' <span style="font-size:10px;color:#58a6ff">🌐</span>')
+                return html.escape(en)
+
+            SEV_ORDER = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "UNKNOWN": 4}
+            results.sort(key=lambda x: SEV_ORDER.get(x.get("Severity", "UNKNOWN"), 4))
+
+            counts = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
+            for v in results:
+                sev = v.get("Severity", "").upper()
+                if sev in counts:
+                    counts[sev] += 1
+            total = len(results)
+
+            SEV_CSS = {
+                "CRITICAL": "badge-critical",
+                "HIGH":     "badge-high",
+                "MEDIUM":   "badge-medium",
+                "LOW":      "badge-low",
+            }
+
+            rows = ""
+            for v in results[:300]:
+                sev    = v.get("Severity", "?").upper()
+                css    = SEV_CSS.get(sev, "badge-low")
+                vid    = html.escape(v.get("VulnerabilityID", "?"))
+                pkg    = html.escape(v.get("PkgName", "?"))
+                inst   = html.escape(v.get("InstalledVersion", "?"))
+                fixed  = html.escape(v.get("FixedVersion", "N/A") or "N/A")
+                target = html.escape(v.get("_target", "?"))
+                title  = tdesc(v.get("Title", "")[:100])
+                rows += f"""<tr>
+                  <td><span class="badge {css}">{sev}</span></td>
+                  <td style="color:#58a6ff;font-size:12px">{vid}</td>
+                  <td><strong>{pkg}</strong></td>
+                  <td class="file-path">{inst}</td>
+                  <td style="color:#3fb950;font-size:12px">{fixed}</td>
+                  <td style="font-size:12px;color:#8b949e">{title or target}</td>
+                </tr>\n"""
+
+            no_findings = "" if total > 0 else """
+              <div class="no-findings">
+                <div class="no-findings-icon">✅</div>
+                <h3>Sin vulnerabilidades detectadas</h3>
+                <p>Trivy no encontró CVEs conocidos en el filesystem del repositorio.</p>
+              </div>"""
+
+            table = f"""
+              <table>
+                <thead>
+                  <tr>
+                    <th>Severidad</th><th>CVE</th><th>Paquete</th>
+                    <th>Instalada</th><th>Corregida en</th><th>Descripción/Target</th>
+                  </tr>
+                </thead>
+                <tbody>{rows}</tbody>
+              </table>""" if total > 0 else ""
+
+            import base64 as _b64t
+            _logo_t = '<h2 style="color:#00F1C7;margin-bottom:10px;">Simon</h2>'
+            try:
+                if os.path.exists("image/logo_claro.png"):
+                    with open("image/logo_claro.png","rb") as _lft:
+                        _logo_t = f'<img src="data:image/png;base64,{_b64t.b64encode(_lft.read()).decode()}" alt="Simon" height="45">'
+            except Exception:
+                pass
+
+            report = f"""<!DOCTYPE html>
+            <html lang="es">
+            <head>
+              <meta charset="UTF-8">
+              <meta name="viewport" content="width=device-width,initial-scale=1.0">
+              <title>Trivy Report — {repo_name}</title>
+              <style>
+                *{{box-sizing:border-box;margin:0;padding:0}}
+                body{{font-family:'Segoe UI',system-ui,sans-serif;background:#1A1A1A;color:#E7E7E7}}
+                .header{{background:#000000;border-bottom:2px solid #00F1C7;padding:30px 40px;position:relative}}
+                .logo-container{{margin-bottom:15px}}
+                .tool-badge{{background:rgba(0,241,199,0.1);border:1px solid #00F1C7;color:#00F1C7;padding:6px 16px;border-radius:20px;font-size:13px;font-weight:700}}
+                .header h1{{font-size:26px;font-weight:700;color:#FFFFFF;margin-top:16px}}
+                .meta{{color:#B0B0B0;font-size:13px;margin-top:10px}}
+                .meta span{{margin-right:20px}}
+                .btn-pdf{{position:absolute;top:40px;right:40px;background:#00F1C7;color:#000;font-weight:bold;padding:10px 20px;border:none;border-radius:6px;cursor:pointer;font-size:14px}}
+                .cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:16px;padding:30px;max-width:1100px;margin:0 auto}}
+                .card{{background:#373737;border-radius:8px;padding:20px;text-align:center;border-top:4px solid}}
+                .card-total{{border-top-color:#B0B0B0}}.card-critical{{border-top-color:#F63D3D}}
+                .card-high{{border-top-color:#FAD900}}.card-medium{{border-top-color:#00F1C7}}.card-low{{border-top-color:#888888}}
+                .card-num{{font-size:36px;font-weight:800;line-height:1}}
+                .card-label{{font-size:11px;color:#B0B0B0;text-transform:uppercase;margin-top:8px;letter-spacing:1px}}
+                .num-total{{color:#FFFFFF}}.num-crit{{color:#F63D3D}}.num-high{{color:#FAD900}}
+                .num-med{{color:#00F1C7}}.num-low{{color:#888888}}
+                .section{{max-width:1100px;margin:0 auto 30px;padding:0 30px}}
+                .section-title{{font-size:16px;font-weight:600;color:#00F1C7;margin-bottom:14px;padding-bottom:8px;border-bottom:1px solid #373737}}
+                .wrap{{background:#000000;border:1px solid #373737;border-radius:8px;overflow:hidden}}
+                table{{width:100%;border-collapse:collapse}}
+                thead{{background:#373737}}
+                th{{padding:14px 16px;color:#E7E7E7;font-size:12px;text-transform:uppercase;text-align:left;letter-spacing:0.5px}}
+                td{{padding:14px 16px;border-bottom:1px solid #373737;font-size:13px;vertical-align:top;color:#D1D1D1}}
+                tr:hover td{{background:#1A1A1A}}
+                .badge{{display:inline-block;padding:4px 12px;border-radius:12px;font-size:11px;font-weight:bold;text-transform:uppercase}}
+                .badge-critical{{background:rgba(246,61,61,0.15);color:#F63D3D;border:1px solid #F63D3D}}
+                .badge-high{{background:rgba(250,217,0,0.15);color:#FAD900;border:1px solid #FAD900}}
+                .badge-medium{{background:rgba(0,241,199,0.15);color:#00F1C7;border:1px solid #00F1C7}}
+                .badge-low{{background:rgba(136,136,136,0.15);color:#888888;border:1px solid #888888}}
+                .file-path{{color:#888888;font-family:monospace;font-size:12px}}
+                .no-findings{{text-align:center;padding:80px 40px}}
+                .no-findings-icon{{font-size:60px;margin-bottom:16px}}
+                .no-findings h3{{font-size:20px;color:#4EDA56;margin-bottom:8px}}
+                .no-findings p{{color:#B0B0B0;font-size:14px}}
+                .footer{{text-align:center;padding:30px;color:#888888;font-size:12px;border-top:1px solid #373737;margin-top:20px}}
+                @media print{{body{{background:#FFF!important;color:#000!important}}.header{{background:#FFF!important}}.btn-pdf{{display:none!important}}.wrap{{background:#FFF!important}}thead{{background:#F6F6F6!important}}th{{color:#373737!important}}td{{color:#1A1A1A!important}}.card{{background:#F6F6F6!important}}}}
+              </style>
+            </head>
+            <body>
+              <div class="header">
+                <button class="btn-pdf" onclick="window.print()">📥 Descargar PDF</button>
+                <div class="logo-container">{_logo_t}</div>
+                <span class="tool-badge">TRIVY — VULNERABILITY SCANNER</span>
+                <h1>Container &amp; Filesystem Vulnerability Report</h1>
+                <div class="meta">
+                  <span>📦 {html.escape(repo_full)}</span>
+                  <span>🌿 {html.escape(ref)}</span>
+                  <span>🔖 {sha}</span>
+                  <span>🕐 {fecha}</span>
+                </div>
+              </div>
+              <div class="cards">
+                <div class="card card-total"><div class="card-num num-total">{total}</div><div class="card-label">Total CVEs</div></div>
+                <div class="card card-critical"><div class="card-num num-crit">{counts["CRITICAL"]}</div><div class="card-label">Critical</div></div>
+                <div class="card card-high"><div class="card-num num-high">{counts["HIGH"]}</div><div class="card-label">High</div></div>
+                <div class="card card-medium"><div class="card-num num-med">{counts["MEDIUM"]}</div><div class="card-label">Medium</div></div>
+                <div class="card card-low"><div class="card-num num-low">{counts["LOW"]}</div><div class="card-label">Low</div></div>
+              </div>
+              <div class="section">
+                <div class="section-title">Vulnerabilidades — Trivy Filesystem Scan</div>
+                <div class="wrap">{table}{no_findings}</div>
+              </div>
+              <div class="footer">Generado por <strong>pipelines-centrales</strong> · Equipo Cybersecurity · Simon · {fecha}</div>
+            </body>
+            </html>"""
+
+            with open(html_path, "w", encoding="utf-8") as fh:
+                fh.write(report)
+            print(f"[Trivy Fallback] {total} CVE(s) → {html_path}")
+        run: |
+          pip install deep-translator --quiet 2>/dev/null || true
+          python3 -c "$PYTHON_SCRIPT"
+
+      - name: Generar JSON de Trivy para Issues
+        continue-on-error: true
+        run: trivy fs . --format json --output reports/trivy-raw.json || true
+
+      - name: Subir reportes Trivy
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-containers-trivy
+          path: reports/${{ github.event.repository.name }}/
+          retention-days: 30
+          if-no-files-found: warn
+       
+
+      - name: Crear Issues en GitHub (Trivy - Límite 10 por Severidad)
+        if: always()
+        # Quitamos el continue-on-error: true para que el exit(1) realmente rompa el job
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cat << 'EOF' > create_issues_trivy.py
+          import json, os, subprocess
+
+          raw_path = 'reports/trivy-raw.json'
+          if not os.path.exists(raw_path):
+              exit(0)
+
+          try:
+              data = json.load(open(raw_path, encoding='utf-8'))
+              results = data.get('Results', [])
+          except Exception:
+              exit(0)
+
+          try:
+              cmd_list = ['gh', 'issue', 'list', '--state', 'open', '--json', 'title']
+              existing_titles = [i['title'] for i in json.loads(subprocess.check_output(cmd_list).decode('utf-8'))]
+          except:
+              existing_titles = []
+
+          MAX_ISSUES_PER_SEV = 10
+          creados_por_sev = {'CRITICAL': 0, 'HIGH': 0, 'MEDIUM': 0, 'LOW': 0, 'UNKNOWN': 0}
+
+          for r in results:
+              target = r.get('Target', 'unknown')
+              for v in r.get('Vulnerabilities', []):
+                  sev = v.get('Severity', 'UNKNOWN').upper()
+                  
+                  if creados_por_sev.get(sev, 0) >= MAX_ISSUES_PER_SEV:
+                      continue
+                      
+                  vid = v.get('VulnerabilityID', 'unknown')
+                  pkg = v.get('PkgName', 'unknown')
+                  inst = v.get('InstalledVersion', 'unknown')
+                  fixed = v.get('FixedVersion', 'N/A')
+                  title_desc = v.get('Title', v.get('Description', ''))[:200]
+                  
+                  title = f"🚨 [SCA] Trivy: {vid} en {pkg}"
+                  
+                  if title not in existing_titles:
+                      body = (f"### 📦 Vulnerabilidad en Dependencias / Contenedor\n\n"
+                              f"**Herramienta**: Trivy\n"
+                              f"**Severidad**: {sev}\n"
+                              f"**CVE**: `{vid}`\n"
+                              f"**Objetivo (Target)**: `{target}`\n\n"
+                              f"| Paquete | Instalada | Corregida en |\n"
+                              f"|---|---|---|\n"
+                              f"| `{pkg}` | `{inst}` | `{fixed}` |\n\n"
+                              f"**Descripción**:\n> {title_desc}\n\n"
+                              f"Revise el reporte adjunto para más información.")
+                      
+                      try:
+                          subprocess.run(['gh', 'issue', 'create', '--title', title, '--body', body], check=True)
+                          existing_titles.append(title)
+                          creados_por_sev[sev] += 1
+                      except:
+                          pass
+
+          print(f"[Issues Trivy] Completado. CRITICAL: {creados_por_sev['CRITICAL']}, HIGH: {creados_por_sev['HIGH']}")
+
+          # --- LÓGICA DE BLOQUEO (QUALITY GATE) ---
+          if creados_por_sev['CRITICAL'] > 0 or creados_por_sev['HIGH'] > 0:
+              print("\n❌ ATENCIÓN: Se detectaron vulnerabilidades CRÍTICAS o ALTAS en dependencias/contenedores (Trivy).")
+              print("🛑 El pipeline fallará para bloquear el pase a producción.")
+              exit(1)
+          EOF
+          
+          python3 create_issues_trivy.py
+
+      
