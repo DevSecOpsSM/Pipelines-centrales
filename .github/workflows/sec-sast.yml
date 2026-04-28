@@ -35,7 +35,6 @@ jobs:
             --config p/owasp-top-ten \
             --config p/secrets \
             --config p/ci \
-            --config p/default \
             --json \
             --output reports/semgrep-raw.json \
             --timeout 300 \
@@ -275,9 +274,8 @@ jobs:
                 <div class="card card-warning"><div class="card-num num-warning">{counts.get("WARNING", 0)}</div><div class="card-label">Warning</div></div>
                 <div class="card card-info"><div class="card-num num-info">{counts.get("INFO", 0)}</div><div class="card-label">Info</div></div>
               </div>
-              <div class="section">
-                 <div class="rules-info">
-                  Reglas aplicadas: <strong>p/owasp-top-ten</strong> · <strong>p/secrets</strong> · <strong>p/ci</strong> · <strong>p/default (Calidad y Bugs)</strong>
+              <div class="rules-info">
+                  Reglas aplicadas: <strong>p/owasp-top-ten</strong> · <strong>p/secrets</strong> · <strong>p/ci</strong>
                   — Cobertura multi-lenguaje (Python, JS/TS, Java, Go, PHP, Ruby, C/C++, Kotlin, Swift y más)
                 </div>
                 <div class="section-title">Hallazgos — Semgrep SAST</div>
