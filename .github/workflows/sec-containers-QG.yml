@@ -328,9 +328,15 @@ jobs:
 
           MAX_ISSUES_PER_SEV = 10
           creados_por_sev = {'CRITICAL': 0, 'HIGH': 0, 'MEDIUM': 0, 'LOW': 0, 'INFO': 0}
+          
+          # --- NUEVO: Contador real de vulnerabilidades ---
+          total_hallazgos_por_sev = {'CRITICAL': 0, 'HIGH': 0, 'MEDIUM': 0, 'LOW': 0, 'INFO': 0}
 
           for q in queries:
               sev = q.get('severity', 'INFO').upper()
+              
+              # Siempre contamos el hallazgo para el bloqueo
+              total_hallazgos_por_sev[sev] = total_hallazgos_por_sev.get(sev, 0) + 1
               
               if creados_por_sev.get(sev, 0) >= MAX_ISSUES_PER_SEV:
                   continue
@@ -339,7 +345,6 @@ jobs:
               desc = q.get('description', '')[:300]
               files = q.get('files', [])
               
-              # Formatear la lista de archivos afectados
               files_str = "\n".join([f"- `{f.get('file_name', '?')}` (Línea: {f.get('line', '?')})" for f in files[:5]])
               if len(files) > 5:
                   files_str += f"\n- ...y {len(files)-5} archivos más."
@@ -364,15 +369,14 @@ jobs:
 
           print(f"[Issues KICS] Completado. CRITICAL: {creados_por_sev['CRITICAL']}, HIGH: {creados_por_sev['HIGH']}, MEDIUM: {creados_por_sev['MEDIUM']}")
 
-          # --- LÓGICA DE BLOQUEO (QUALITY GATE) ---
-          if creados_por_sev['CRITICAL'] > 0 or creados_por_sev['HIGH'] > 0:
-              print("\n❌ ATENCIÓN: Se detectaron misconfiguraciones CRÍTICAS o ALTAS en la infraestructura (KICS).")
+          # --- LÓGICA DE BLOQUEO CORREGIDA ---
+          if total_hallazgos_por_sev['CRITICAL'] > 0 or total_hallazgos_por_sev['HIGH'] > 0:
+              print(f"\n❌ ATENCIÓN: Se detectaron {total_hallazgos_por_sev['CRITICAL']} fallos CRÍTICOS y {total_hallazgos_por_sev['HIGH']} ALTOS en IaC (KICS).")
               print("🛑 El pipeline fallará para bloquear el pase a producción.")
               exit(1)
           EOF
           
           python3 create_issues_kics.py
-
   # ─────────────────────────────────────────────────────────────────────────
   # JOB 2 · HADOLINT — Linter de Dockerfiles
   # ─────────────────────────────────────────────────────────────────────────
@@ -886,7 +890,6 @@ jobs:
 
       - name: Crear Issues en GitHub (Trivy - Límite 10 por Severidad)
         if: always()
-        # Quitamos el continue-on-error: true para que el exit(1) realmente rompa el job
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -911,11 +914,17 @@ jobs:
 
           MAX_ISSUES_PER_SEV = 10
           creados_por_sev = {'CRITICAL': 0, 'HIGH': 0, 'MEDIUM': 0, 'LOW': 0, 'UNKNOWN': 0}
+          
+          # --- NUEVO: Contador real de vulnerabilidades ---
+          total_hallazgos_por_sev = {'CRITICAL': 0, 'HIGH': 0, 'MEDIUM': 0, 'LOW': 0, 'UNKNOWN': 0}
 
           for r in results:
               target = r.get('Target', 'unknown')
               for v in r.get('Vulnerabilities', []):
                   sev = v.get('Severity', 'UNKNOWN').upper()
+                  
+                  # Siempre contamos el hallazgo para el bloqueo
+                  total_hallazgos_por_sev[sev] = total_hallazgos_por_sev.get(sev, 0) + 1
                   
                   if creados_por_sev.get(sev, 0) >= MAX_ISSUES_PER_SEV:
                       continue
@@ -949,13 +958,12 @@ jobs:
 
           print(f"[Issues Trivy] Completado. CRITICAL: {creados_por_sev['CRITICAL']}, HIGH: {creados_por_sev['HIGH']}")
 
-          # --- LÓGICA DE BLOQUEO (QUALITY GATE) ---
-          if creados_por_sev['CRITICAL'] > 0 or creados_por_sev['HIGH'] > 0:
-              print("\n❌ ATENCIÓN: Se detectaron vulnerabilidades CRÍTICAS o ALTAS en dependencias/contenedores (Trivy).")
+          # --- LÓGICA DE BLOQUEO CORREGIDA ---
+          if total_hallazgos_por_sev['CRITICAL'] > 0 or total_hallazgos_por_sev['HIGH'] > 0:
+              print(f"\n❌ ATENCIÓN: Se detectaron {total_hallazgos_por_sev['CRITICAL']} CVEs CRÍTICOS y {total_hallazgos_por_sev['HIGH']} ALTOS (Trivy).")
               print("🛑 El pipeline fallará para bloquear el pase a producción.")
               exit(1)
           EOF
           
           python3 create_issues_trivy.py
-
       
