@@ -1,0 +1,396 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# SSDLC · Etapa 2 — SAST (Static Application Security Testing)
+# Herramienta: Semgrep — OWASP Top 10 + Secrets + CI rules
+# Modo Auditoría: reporta hallazgos sin bloquear el pipeline
+# Universal: funciona con cualquier lenguaje de programación
+# ═══════════════════════════════════════════════════════════════════════════
+
+name: Security - SAST (Semgrep)
+
+on:
+  workflow_call:
+
+jobs:
+  semgrep:
+    name: "Semgrep — SAST OWASP Top 10"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+
+    steps:
+      - name: Checkout repositorio
+        uses: actions/checkout@v4
+
+      - name: Crear directorio de reportes
+        run: mkdir -p "reports/${{ github.event.repository.name }}"
+
+      - name: Instalar Semgrep
+        run: pip install semgrep --quiet
+
+      - name: Ejecutar Semgrep — Seguridad + Calidad (OWASP, Secrets, CI, Default)
+        continue-on-error: true
+        run: |
+          semgrep scan \
+            --config p/owasp-top-ten \
+            --config p/secrets \
+            --config p/ci \
+            --json \
+            --output reports/semgrep-raw.json \
+            --timeout 300 \
+            --max-memory 1500 \
+            . || true
+
+          # Garantizar archivo JSON válido si Semgrep no produjo salida
+          if [ ! -s reports/semgrep-raw.json ]; then
+            echo '{"results":[],"errors":[],"version":"0"}' > reports/semgrep-raw.json
+          fi
+
+      - name: Generar reporte HTML
+        if: always()
+        env:
+          REPO_NAME: ${{ github.event.repository.name }}
+          REPO_FULL: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          REF: ${{ github.ref_name }}
+          PYTHON_SCRIPT: |
+            import json, html, os
+            from datetime import datetime
+
+            repo_name = os.environ['REPO_NAME']
+            repo_full = os.environ['REPO_FULL']
+            sha       = os.environ['SHA'][:7]
+            ref       = os.environ['REF']
+            fecha     = datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')
+            out_dir   = f"reports/{repo_name}"
+
+            results = []
+            errors  = []
+            try:
+                data    = json.load(open("reports/semgrep-raw.json", encoding="utf-8"))
+                results = data.get("results", [])
+                errors  = data.get("errors", [])
+            except Exception:
+                pass
+
+            def translate_es(text):
+                if not text or len(str(text).strip()) < 5:
+                    return str(text)
+                try:
+                    from deep_translator import GoogleTranslator
+                    result = GoogleTranslator(source='auto', target='es').translate(str(text)[:500])
+                    return result if result else str(text)
+                except Exception:
+                    return str(text)
+
+            def tdesc(en):
+                es = translate_es(en)
+                if es != en:
+                    return (f'<span title="EN: {html.escape(en)}" '
+                            f'style="cursor:help;border-bottom:1px dashed #444">'
+                            f'{html.escape(es)}</span>'
+                            f' <span style="font-size:10px;color:#58a6ff">🌐</span>')
+                return html.escape(en)
+
+            SEV_MAP = {"ERROR": "critical", "WARNING": "high", "INFO": "medium"}
+            SEV_LABEL = {"ERROR": "ERROR", "WARNING": "WARNING", "INFO": "INFO"}
+
+            counts = {"ERROR": 0, "WARNING": 0, "INFO": 0}
+            for r in results:
+                sev = r.get("extra", {}).get("severity", "INFO").upper()
+                counts[sev] = counts.get(sev, 0) + 1
+
+            total = len(results)
+
+            rows = ""
+            for r in results[:200]:
+                sev       = r.get("extra", {}).get("severity", "INFO").upper()
+                css_class = SEV_MAP.get(sev, "medium")
+                label     = SEV_LABEL.get(sev, sev)
+                check_id  = r.get("check_id", "")
+                rule_short = check_id.split(".")[-1] if "." in check_id else check_id
+                rule_full  = html.escape(check_id)
+                rule_disp  = html.escape(rule_short)
+                filepath   = html.escape(r.get("path", "?"))
+                line_s     = r.get("start", {}).get("line", "?")
+                msg        = tdesc(r.get("extra", {}).get("message", "")[:200])
+                meta       = r.get("extra", {}).get("metadata", {})
+                owasp_ref  = ""
+                if "owasp" in meta:
+                    owasp_val = meta["owasp"]
+                    owasp_str = owasp_val[0] if isinstance(owasp_val, list) else str(owasp_val)
+                    owasp_ref = f'<br><span style="font-size:11px;color:#58a6ff">{html.escape(owasp_str[:60])}</span>'
+                rows += f"""<tr>
+                  <td class="col-sev"><span class="badge badge-{css_class}">{label}</span></td>
+                  <td class="col-rule" title="{rule_full}"><code class="rule">{rule_disp}</code></td>
+                  <td class="col-file file-path">{filepath}:{line_s}</td>
+                  <td class="col-desc">{msg}{owasp_ref}</td>
+                </tr>\n"""
+
+            error_block = ""
+            if errors:
+                err_items = "".join(
+                    f'<li>{html.escape(str(e.get("message", e.get("msg", str(e))))[:180])}</li>'
+                    for e in errors[:20]
+                )
+                error_block = f"""
+                <div class="section" style="page-break-before: always;">
+                  <div class="section-title" style="color:#d29922">Advertencias de Semgrep ({len(errors)})</div>
+                  <div class="findings-wrap" style="padding:20px">
+                    <ul style="font-size:13px;color:#8b949e;line-height:1.8">{err_items}</ul>
+                  </div>
+                </div>"""
+
+            no_findings = "" if total > 0 else """
+              <div class="no-findings">
+                <div class="no-findings-icon">✅</div>
+                <h3>Sin hallazgos</h3>
+                <p>Semgrep analizó el código con las reglas OWASP Top 10, Secrets, CI y Calidad sin encontrar problemas.</p>
+              </div>"""
+
+            table = f"""
+              <table>
+                <thead>
+                  <tr>
+                    <th class="col-sev">Severidad</th><th class="col-rule">Regla</th><th class="col-file">Archivo:Línea</th><th class="col-desc">Descripción</th>
+                  </tr>
+                </thead>
+                <tbody>{rows}</tbody>
+              </table>""" if total > 0 else ""
+
+            _logo_s = '<h2 style="color:#00F1C7;margin-bottom:10px;">Simon</h2>'
+            try:
+                import base64 as _b64s
+                if os.path.exists("image/logo_claro.png"):
+                    with open("image/logo_claro.png","rb") as _lf:
+                        _logo_s = f'<img src="data:image/png;base64,{_b64s.b64encode(_lf.read()).decode()}" alt="Simon" height="45">'
+            except Exception:
+                pass
+
+            report = f"""<!DOCTYPE html>
+            <html lang="es">
+            <head>
+              <meta charset="UTF-8">
+              <title>Semgrep SAST Report — {repo_name}</title>
+              <style>
+                *{{box-sizing:border-box;margin:0;padding:0}}
+                body{{font-family:'Segoe UI',system-ui,sans-serif;background:#1A1A1A;color:#E7E7E7}}
+                .header{{background:#000000;border-bottom:2px solid #00F1C7;padding:30px 40px;position:relative}}
+                .logo-container{{margin-bottom:15px}}
+                .tool-badge{{background:rgba(0,241,199,0.1);border:1px solid #00F1C7;color:#00F1C7;padding:6px 16px;border-radius:20px;font-size:13px;font-weight:700}}
+                .header h1{{font-size:26px;font-weight:700;color:#FFFFFF;margin-top:16px}}
+                .meta{{color:#B0B0B0;font-size:13px;margin-top:10px}}
+                .meta span{{margin-right:20px}}
+                .btn-pdf{{position:absolute;top:40px;right:40px;background:#00F1C7;color:#000000;font-weight:bold;padding:10px 20px;border:none;border-radius:6px;cursor:pointer;font-size:14px;transition:0.2s}}
+                .btn-pdf:hover{{background:#00c4a0}}
+                .cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:16px;padding:30px;max-width:1100px;margin:0 auto}}
+                .card{{background:#373737;border-radius:8px;padding:20px;text-align:center;border-top:4px solid}}
+                .card-total{{border-top-color:#B0B0B0}}
+                .card-error{{border-top-color:#F63D3D}}
+                .card-warning{{border-top-color:#FAD900}}
+                .card-info{{border-top-color:#00F1C7}}
+                .card-num{{font-size:36px;font-weight:800;line-height:1}}
+                .card-label{{font-size:11px;color:#B0B0B0;text-transform:uppercase;margin-top:8px;letter-spacing:1px}}
+                .num-total{{color:#FFFFFF}}.num-error{{color:#F63D3D}}.num-warning{{color:#FAD900}}.num-info{{color:#00F1C7}}
+                .section{{max-width:1100px;margin:0 auto 30px;padding:0 30px}}
+                .section-title{{font-size:16px;font-weight:600;color:#00F1C7;margin-bottom:14px;padding-bottom:8px;border-bottom:1px solid #373737}}
+                .wrap,.findings-wrap{{background:#000000;border:1px solid #373737;border-radius:8px;overflow:hidden}}
+                
+                table{{width:100%;border-collapse:collapse;table-layout:fixed}}
+                .col-sev{{width:12%}} .col-rule{{width:20%}} .col-file{{width:28%}} .col-desc{{width:40%}}
+                
+                thead{{background:#373737}}
+                th{{padding:14px 16px;color:#E7E7E7;font-size:12px;text-transform:uppercase;text-align:left;letter-spacing:0.5px}}
+                td{{padding:14px 16px;border-bottom:1px solid #373737;font-size:13px;vertical-align:top;color:#D1D1D1;word-wrap:break-word}}
+                tr:hover td{{background:#1A1A1A}}
+                .badge{{display:inline-block;padding:4px 12px;border-radius:12px;font-size:11px;font-weight:bold;text-transform:uppercase}}
+                .badge-critical{{background:rgba(246,61,61,0.15);color:#F63D3D;border:1px solid #F63D3D}}
+                .badge-high{{background:rgba(250,217,0,0.15);color:#FAD900;border:1px solid #FAD900}}
+                .badge-medium{{background:rgba(0,241,199,0.15);color:#00F1C7;border:1px solid #00F1C7}}
+                .rule{{background:#373737;color:#00F1C7;padding:2px 6px;border-radius:4px;font-size:11px;word-break:break-word;display:inline-block}}
+                .file-path{{color:#888888;font-family:monospace;font-size:12px;word-break:break-all}}
+                .rules-info{{background:#373737;border:1px solid #00F1C7;border-radius:8px;padding:16px 20px;margin-bottom:20px;font-size:13px;color:#B0B0B0}}
+                .rules-info strong{{color:#E7E7E7}}
+                .no-findings{{text-align:center;padding:80px 40px}}
+                .no-findings-icon{{font-size:60px;margin-bottom:16px}}
+                .no-findings h3{{font-size:20px;color:#4EDA56;margin-bottom:8px}}
+                .no-findings p{{color:#B0B0B0}}
+                .footer{{text-align:center;padding:30px;color:#888888;font-size:12px;border-top:1px solid #373737;margin-top:20px}}
+                
+                /* ========================================================================= */
+                /* REGLAS ESPECÍFICAS PARA IMPRESIÓN (PDF)                                   */
+                /* ========================================================================= */
+                @media print {{
+                  @page {{ margin: 1.5cm; size: auto; }}
+                  body {{ 
+                    background: #FFFFFF !important; 
+                    color: #000000 !important; 
+                    -webkit-print-color-adjust: exact !important; 
+                    print-color-adjust: exact !important; 
+                  }}
+                  .header {{ background: #FFFFFF !important; border-bottom: 2px solid #00F1C7 !important; padding: 20px 0; }}
+                  .header h1 {{ color: #000000 !important; }}
+                  .btn-pdf {{ display: none !important; }}
+                  .cards {{ padding: 15px 0; gap: 10px; }}
+                  .card {{ background: #F6F6F6 !important; border: 1px solid #D1D1D1 !important; border-top: 4px solid !important; padding: 15px; page-break-inside: avoid; }}
+                  .num-total {{ color: #1A1A1A !important; }}
+                  .section {{ padding: 0; }}
+                  .rules-info {{ border: 1px solid #D1D1D1 !important; background: #F6F6F6 !important; color: #333 !important; page-break-inside: avoid; }}
+                  .rules-info strong {{ color: #000 !important; }}
+                  .wrap, .findings-wrap {{ border: 1px solid #D1D1D1 !important; background: #FFFFFF !important; }}
+                  
+                  /* Control estricto de la tabla para evitar rupturas */
+                  table {{ table-layout: fixed; width: 100%; }}
+                  thead {{ display: table-header-group; background: #F6F6F6 !important; }}
+                  tr {{ page-break-inside: avoid; page-break-after: auto; }}
+                  td {{ border-bottom: 1px solid #E7E7E7 !important; color: #1A1A1A !important; padding: 10px; vertical-align: middle; }}
+                  th {{ color: #373737 !important; border-bottom: 2px solid #D1D1D1 !important; padding: 10px; }}
+                  
+                  /* Arreglo de los badges y códigos en fondo blanco */
+                  .badge {{ border: none !important; padding: 4px 8px; font-size: 10px; }}
+                  .badge-critical {{ background: #F63D3D !important; color: #FFFFFF !important; }}
+                  .badge-high {{ background: #FAD900 !important; color: #000000 !important; }}
+                  .badge-medium {{ background: #00F1C7 !important; color: #000000 !important; }}
+                  .rule {{ background: #E7E7E7 !important; color: #000 !important; border: 1px solid #CCC !important; }}
+                }}
+              </style>
+            </head>
+            <body>
+              <div class="header">
+                <button class="btn-pdf" onclick="window.print()">📥 Descargar PDF</button>
+                <div class="logo-container">{_logo_s}</div>
+                <span class="tool-badge">SEMGREP — SAST</span>
+                <h1>Static Application Security Testing Report</h1>
+                <div class="meta">
+                  <span>📦 {html.escape(repo_full)}</span>
+                  <span>🌿 {html.escape(ref)}</span>
+                  <span>🔖 {sha}</span>
+                  <span>🕐 {fecha}</span>
+                </div>
+              </div>
+              <div class="cards">
+                <div class="card card-total"><div class="card-num num-total">{total}</div><div class="card-label">Total</div></div>
+                <div class="card card-error"><div class="card-num num-error">{counts.get("ERROR", 0)}</div><div class="card-label">Error</div></div>
+                <div class="card card-warning"><div class="card-num num-warning">{counts.get("WARNING", 0)}</div><div class="card-label">Warning</div></div>
+                <div class="card card-info"><div class="card-num num-info">{counts.get("INFO", 0)}</div><div class="card-label">Info</div></div>
+              </div>
+              <div class="rules-info">
+                  Reglas aplicadas: <strong>p/owasp-top-ten</strong> · <strong>p/secrets</strong> · <strong>p/ci</strong>
+                  — Cobertura multi-lenguaje (Python, JS/TS, Java, Go, PHP, Ruby, C/C++, Kotlin, Swift y más)
+                </div>
+                <div class="section-title">Hallazgos — Semgrep SAST</div>
+                <div class="wrap">{table}{no_findings}</div>
+              </div>
+              {error_block}
+              <div class="footer">Generado por <strong>pipelines-centrales</strong> · Equipo Cybersecurity · Simon · {fecha}</div>
+            </body>
+            </html>"""
+
+            out_path = f"{out_dir}/semgrep-report.html"
+            with open(out_path, "w", encoding="utf-8") as fh:
+                fh.write(report)
+            print(f"[Semgrep] {total} hallazgo(s): ERROR={counts.get('ERROR',0)}, WARNING={counts.get('WARNING',0)}, INFO={counts.get('INFO',0)} → {out_path}")
+        run: |
+          pip install deep-translator --quiet 2>/dev/null || true
+          python3 -c "$PYTHON_SCRIPT"
+
+      - name: Subir reporte
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-sast-semgrep
+          path: reports/${{ github.event.repository.name }}/
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Crear Issues en GitHub (Límite 10 por Severidad)
+        if: always()
+        # Quitamos continue-on-error: true para habilitar el Modo Bloqueo
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cat << 'EOF' > create_issues.py
+          import json, os, subprocess
+
+          raw_path = 'reports/semgrep-raw.json'
+          if not os.path.exists(raw_path):
+              print("[Issues] No se encontró el archivo JSON de Semgrep.")
+              exit(0)
+
+          try:
+              data = json.load(open(raw_path, encoding='utf-8'))
+              results = data.get('results', [])
+          except Exception as e:
+              print(f"[Issues] Error leyendo el JSON: {e}")
+              exit(0)
+
+          # 1. Obtener lista de issues abiertos para NO duplicar
+          try:
+              cmd_list = ['gh', 'issue', 'list', '--state', 'open', '--json', 'title']
+              existing_issues_raw = subprocess.check_output(cmd_list).decode('utf-8')
+              existing_titles = [i['title'] for i in json.loads(existing_issues_raw)]
+          except Exception as e:
+              print(f"[WARN] No se pudieron leer los issues actuales. {e}")
+              existing_titles = []
+
+          # 2. Configuración de límites y traducciones visuales
+          MAX_ISSUES_PER_SEV = 10
+          creados_por_sev = {'ERROR': 0, 'WARNING': 0, 'INFO': 0}
+          
+          # Semgrep usa ERROR, WARNING, INFO. Los mapeamos a algo más amigable
+          sev_visual = {
+              'ERROR': '🔴 CRÍTICO / ALTO', 
+              'WARNING': '🟡 MEDIO', 
+              'INFO': '🔵 BAJO / INFO'
+          }
+
+          issues_creados_total = 0
+
+          # 3. Recorrer hallazgos y crear issues controladamente
+          for r in results:
+              sev = r.get('extra', {}).get('severity', 'INFO').upper()
+              
+              # Si ya llegamos a 10 tickets para esta severidad, saltamos al siguiente hallazgo
+              if creados_por_sev.get(sev, 0) >= MAX_ISSUES_PER_SEV:
+                  continue
+              
+              rule = r.get('check_id', 'unknown').split('.')[-1]
+              filepath = r.get('path', 'unknown')
+              line = r.get('start', {}).get('line', '?')
+              msg = r.get('extra', {}).get('message', '')[:300]
+              
+              # Título estandarizado para evitar duplicados
+              title = f"🚨 [SAST] Semgrep: {rule} en {filepath}"
+              
+              if title not in existing_titles:
+                  body = (f"### 🛡️ Hallazgo de Seguridad Automatizado\n\n"
+                          f"**Herramienta**: Semgrep\n"
+                          f"**Severidad**: {sev_visual.get(sev, sev)}\n"
+                          f"**Archivo**: `{filepath}` (Línea: {line})\n"
+                          f"**Regla**: `{rule}`\n\n"
+                          f"**Descripción**:\n> {msg}\n\n"
+                          f"Revise el reporte HTML adjunto en la pestaña de Actions para más detalles.")
+                  
+                  print(f"[Issues] Creando ticket [{sev}]: {title}")
+                  try:
+                      subprocess.run(['gh', 'issue', 'create', '--title', title, '--body', body], check=True)
+                      existing_titles.append(title)
+                      creados_por_sev[sev] += 1
+                      issues_creados_total += 1
+                  except Exception as e:
+                      print(f"[WARN] Falló la creación del issue: {e}")
+
+          # 4. Resumen final en los logs
+          print(f"\n[Issues] Proceso completado. Tickets nuevos creados: {issues_creados_total}")
+          print(f"         - Críticos/Altos (ERROR): {creados_por_sev['ERROR']} / {MAX_ISSUES_PER_SEV}")
+          print(f"         - Medios (WARNING): {creados_por_sev['WARNING']} / {MAX_ISSUES_PER_SEV}")
+          print(f"         - Bajos (INFO): {creados_por_sev['INFO']} / {MAX_ISSUES_PER_SEV}")
+
+          # --- LÓGICA DE BLOQUEO (QUALITY GATE) ---
+          if creados_por_sev['ERROR'] > 0:
+              print("\n❌ ATENCIÓN: Se detectaron vulnerabilidades de código CRÍTICAS/ALTAS (Semgrep ERROR).")
+              print("🛑 El pipeline fallará para bloquear el pase a producción.")
+              exit(1)
+          EOF
+          
+          python3 create_issues.py
