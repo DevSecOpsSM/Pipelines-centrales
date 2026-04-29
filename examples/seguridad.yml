@@ -29,6 +29,7 @@ on:
 permissions:
   contents: read
   actions: read
+  issues: write
 
 jobs:
 
@@ -70,6 +71,13 @@ jobs:
     uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-containers.yml@main
 
   # ──────────────────────────────────────────────────────────────────────
+  # ETAPA IaC — Especializada en Infraestructura (Checkov)
+  # ──────────────────────────────────────────────────────────────────────
+  iac:
+    name: "Etapa IaC · Checkov"
+    uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-iac-checkov.yml@main
+
+  # ──────────────────────────────────────────────────────────────────────
   # RESUMEN — Step summary visible en la UI de GitHub Actions
   # ──────────────────────────────────────────────────────────────────────
   resumen:
@@ -82,6 +90,7 @@ jobs:
       - sast
       - sca
       - contenedores
+      - iac
 
     steps:
       - name: Generar resumen en GitHub Actions UI
@@ -103,9 +112,11 @@ jobs:
           | 2 | SAST | Semgrep (OWASP Top 10) | $(STATUS_ICON "${{ needs.sast.result }}") ${{ needs.sast.result }} |
           | 3 | SCA | OWASP Dependency-Check | $(STATUS_ICON "${{ needs.sca.result }}") ${{ needs.sca.result }} |
           | 4 | Container Security | KICS · Hadolint · Trivy | $(STATUS_ICON "${{ needs.contenedores.result }}") ${{ needs.contenedores.result }} |
+          | IaC | Infraestructura | Checkov (Terraform) | $(STATUS_ICON "${{ needs.iac.result }}") ${{ needs.iac.result }} |
+          
           > 📋 Los reportes HTML detallados están disponibles en la pestaña **Artifacts** de este workflow run.
           >
-          > 🛡️ **Modo Auditoría** — todos los scans reportan hallazgos sin bloquear el pipeline.
+          > 🛡️ **Quality Gate Activo** — Los hallazgos críticos y altos bloquean la integración del código.
           >
           > Ejecutado por: **pipelines-centrales** · Equipo Cybersecurity
           EOF
@@ -115,7 +126,7 @@ jobs:
   # ──────────────────────────────────────────────────────────────────────
   empaquetar-reportes:
     name: "📦 Consolidar Reportes"
-    needs: [hooks, secretos, sast, sca, contenedores]
+    needs: [hooks, secretos, sast, sca, contenedores, iac]
     if: always()
     runs-on: ubuntu-latest
     # Se eleva el permiso LOCALMENTE para poder borrar los artefactos vía API
