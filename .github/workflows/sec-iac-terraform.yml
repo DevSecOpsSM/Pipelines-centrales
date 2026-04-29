@@ -38,7 +38,217 @@ jobs:
           if [ ! -s reports/checkov-raw.json ]; then
             echo '{"results":{"passed_checks":[],"failed_checks":[]}}' > reports/checkov-raw.json
           fi
+      - name: Generar reporte HTML Checkov
+        if: always()
+        env:
+          REPO_NAME: ${{ github.event.repository.name }}
+          REPO_FULL: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          REF: ${{ github.ref_name }}
+          PYTHON_SCRIPT: |
+            import json, html, os
+            from datetime import datetime
 
+            repo_name = os.environ.get('REPO_NAME', 'unknown')
+            repo_full = os.environ.get('REPO_FULL', 'unknown')
+            sha       = os.environ.get('SHA', 'unknown')[:7]
+            ref       = os.environ.get('REF', 'unknown')
+            fecha     = datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')
+            out_dir   = f"reports/{repo_name}"
+
+            failed_checks = []
+            passed_checks = []
+
+            raw_path = "reports/checkov-raw.json"
+            if os.path.exists(raw_path):
+                try:
+                    data = json.load(open(raw_path, encoding='utf-8'))
+                    reports = data if isinstance(data, list) else [data]
+                    for rep in reports:
+                        if 'results' in rep:
+                            failed_checks.extend(rep['results'].get('failed_checks', []))
+                            passed_checks.extend(rep['results'].get('passed_checks', []))
+                except Exception as e:
+                    print(f"Error procesando JSON para HTML: {e}")
+
+            total_failed = len(failed_checks)
+            total_passed = len(passed_checks)
+            total_checks = total_failed + total_passed
+
+            # Checkov OS no siempre da severity nativa. Asignamos o estimamos.
+            for check in failed_checks:
+                if not check.get('severity'):
+                    check['severity'] = 'HIGH'
+
+            # Contar severidades (si están disponibles)
+            counts = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
+            for check in failed_checks:
+                sev = check.get('severity', 'HIGH').upper()
+                if sev in counts:
+                    counts[sev] += 1
+                else:
+                    counts['HIGH'] += 1 # Fallback
+
+            SEV_CSS = {
+                "CRITICAL": "badge-critical",
+                "HIGH":     "badge-high",
+                "MEDIUM":   "badge-medium",
+                "LOW":      "badge-low"
+            }
+
+            rows = ""
+            for check in failed_checks[:200]: # Limit for performance
+                sev = check.get('severity', 'HIGH').upper()
+                css = SEV_CSS.get(sev, "badge-high")
+                check_id = html.escape(check.get('check_id', 'unknown'))
+                resource = html.escape(check.get('resource', 'unknown'))
+                file_path = html.escape(check.get('file_path', 'unknown'))
+                file_line = check.get('file_line_range', ['?','?'])
+                line_str = f"{file_line[0]}-{file_line[1]}" if isinstance(file_line, list) and len(file_line) == 2 else "?"
+                desc = html.escape(check.get('check_name', ''))
+                
+                rows += f"""<tr>
+                  <td class="col-sev"><span class="badge {css}">{sev}</span></td>
+                  <td class="col-rule"><code class="rule">{check_id}</code></td>
+                  <td class="col-resource"><strong>{resource}</strong></td>
+                  <td class="col-file file-path">{file_path}:{line_str}</td>
+                  <td class="col-desc">{desc}</td>
+                </tr>\n"""
+
+            no_findings = "" if total_failed > 0 else """
+              <div class="no-findings">
+                <div class="no-findings-icon">✅</div>
+                <h3>Infraestructura Segura</h3>
+                <p>Checkov analizó el código Terraform y no encontró misconfiguraciones o vulnerabilidades.</p>
+              </div>"""
+
+            table = f"""
+              <table>
+                <thead>
+                  <tr>
+                    <th class="col-sev">Severidad</th><th class="col-rule">Regla</th><th class="col-resource">Recurso</th>
+                    <th class="col-file">Archivo:Línea</th><th class="col-desc">Descripción</th>
+                  </tr>
+                </thead>
+                <tbody>{rows}</tbody>
+              </table>""" if total_failed > 0 else ""
+
+            import base64 as _b64
+            _logo = '<h2 style="color:#00F1C7;margin-bottom:10px;">Simon</h2>'
+            try:
+                if os.path.exists("image/logo_claro.png"):
+                    with open("image/logo_claro.png","rb") as _lf:
+                        _logo = f'<img src="data:image/png;base64,{_b64.b64encode(_lf.read()).decode()}" alt="Simon" height="45">'
+            except Exception:
+                pass
+
+            report = f"""<!DOCTYPE html>
+            <html lang="es">
+            <head>
+              <meta charset="UTF-8">
+              <meta name="viewport" content="width=device-width, initial-scale=1.0">
+              <title>Checkov IaC Report — {repo_name}</title>
+              <style>
+                *{{box-sizing:border-box;margin:0;padding:0}}
+                body{{font-family:'Segoe UI',system-ui,sans-serif;background:#1A1A1A;color:#E7E7E7}}
+                .header{{background:#000000;border-bottom:2px solid #00F1C7;padding:30px 40px;position:relative}}
+                .logo-container{{margin-bottom:15px}}
+                .tool-badge{{background:rgba(0,241,199,0.1);border:1px solid #00F1C7;color:#00F1C7;padding:6px 16px;border-radius:20px;font-size:13px;font-weight:700}}
+                .header h1{{font-size:26px;font-weight:700;color:#FFFFFF;margin-top:16px}}
+                .meta{{color:#B0B0B0;font-size:13px;margin-top:10px}}
+                .meta span{{margin-right:20px}}
+                .btn-pdf{{position:absolute;top:40px;right:40px;background:#00F1C7;color:#000;font-weight:bold;padding:10px 20px;border:none;border-radius:6px;cursor:pointer;font-size:14px;transition:0.2s}}
+                .btn-pdf:hover{{background:#00c4a0}}
+                .cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:16px;padding:30px;max-width:1100px;margin:0 auto}}
+                .card{{background:#373737;border-radius:8px;padding:20px;text-align:center;border-top:4px solid}}
+                .card-total{{border-top-color:#B0B0B0}}.card-passed{{border-top-color:#4EDA56}}.card-failed{{border-top-color:#F63D3D}}
+                .card-num{{font-size:36px;font-weight:800;line-height:1}}
+                .card-label{{font-size:11px;color:#B0B0B0;text-transform:uppercase;margin-top:8px;letter-spacing:1px}}
+                .num-total{{color:#FFFFFF}}.num-passed{{color:#4EDA56}}.num-failed{{color:#F63D3D}}
+                .section{{max-width:1100px;margin:0 auto 30px;padding:0 30px}}
+                .section-title{{font-size:16px;font-weight:600;color:#00F1C7;margin-bottom:14px;padding-bottom:8px;border-bottom:1px solid #373737}}
+                .wrap{{background:#000000;border:1px solid #373737;border-radius:8px;overflow:hidden}}
+                
+                table{{width:100%;border-collapse:collapse;table-layout:fixed}}
+                .col-sev{{width:12%}} .col-rule{{width:15%}} .col-resource{{width:23%}} .col-file{{width:20%}} .col-desc{{width:30%}}
+                
+                thead{{background:#373737}}
+                th{{padding:14px 16px;color:#E7E7E7;font-size:12px;text-transform:uppercase;text-align:left;letter-spacing:0.5px}}
+                td{{padding:14px 16px;border-bottom:1px solid #373737;font-size:13px;vertical-align:top;color:#D1D1D1;word-wrap:break-word}}
+                tr:hover td{{background:#1A1A1A}}
+                .badge{{display:inline-block;padding:4px 12px;border-radius:12px;font-size:11px;font-weight:bold;text-transform:uppercase}}
+                .badge-critical{{background:rgba(246,61,61,0.15);color:#F63D3D;border:1px solid #F63D3D}}
+                .badge-high{{background:rgba(250,217,0,0.15);color:#FAD900;border:1px solid #FAD900}}
+                .badge-medium{{background:rgba(0,241,199,0.15);color:#00F1C7;border:1px solid #00F1C7}}
+                .badge-low{{background:rgba(136,136,136,0.15);color:#888888;border:1px solid #888888}}
+                .rule{{background:#373737;color:#00F1C7;padding:2px 6px;border-radius:4px;font-size:11px;word-break:break-all}}
+                .file-path{{color:#888888;font-family:monospace;font-size:11px;word-break:break-all}}
+                .no-findings{{text-align:center;padding:80px 40px}}
+                .no-findings-icon{{font-size:60px;margin-bottom:16px}}
+                .no-findings h3{{font-size:20px;color:#4EDA56;margin-bottom:8px}}
+                .no-findings p{{color:#B0B0B0}}
+                .footer{{text-align:center;padding:30px;color:#888888;font-size:12px;border-top:1px solid #373737;margin-top:20px}}
+                
+                @media print {{
+                  @page {{ margin: 1.5cm; size: auto; }}
+                  body {{ background: #FFFFFF !important; color: #000000 !important; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }}
+                  .header {{ background: #FFFFFF !important; border-bottom: 2px solid #00F1C7 !important; padding: 20px 0; }}
+                  .header h1 {{ color: #000000 !important; }}
+                  .btn-pdf {{ display: none !important; }}
+                  .cards {{ padding: 15px 0; gap: 10px; }}
+                  .card {{ background: #F6F6F6 !important; border: 1px solid #D1D1D1 !important; border-top: 4px solid !important; padding: 15px; page-break-inside: avoid; }}
+                  .num-total, .num-passed, .num-failed {{ color: #1A1A1A !important; }}
+                  .section {{ padding: 0; }}
+                  .wrap {{ border: 1px solid #D1D1D1 !important; background: #FFFFFF !important; }}
+                  table {{ table-layout: fixed; width: 100%; }}
+                  thead {{ display: table-header-group; background: #F6F6F6 !important; }}
+                  tr {{ page-break-inside: avoid; page-break-after: auto; }}
+                  td {{ border-bottom: 1px solid #E7E7E7 !important; color: #1A1A1A !important; padding: 10px; vertical-align: middle; }}
+                  th {{ color: #373737 !important; border-bottom: 2px solid #D1D1D1 !important; padding: 10px; }}
+                  .badge {{ border: none !important; padding: 4px 8px; font-size: 10px; }}
+                  .badge-critical {{ background: #F63D3D !important; color: #FFFFFF !important; }}
+                  .badge-high {{ background: #FAD900 !important; color: #000000 !important; }}
+                  .badge-medium {{ background: #00F1C7 !important; color: #000000 !important; }}
+                  .rule {{ background: #E7E7E7 !important; color: #000 !important; border: 1px solid #CCC !important; }}
+                }}
+              </style>
+            </head>
+            <body>
+              <div class="header">
+                <button class="btn-pdf" onclick="window.print()">📥 Descargar PDF</button>
+                <div class="logo-container">{_logo}</div>
+                <span class="tool-badge">CHECKOV — IaC SECURITY</span>
+                <h1>Terraform Security Report</h1>
+                <div class="meta">
+                  <span>📦 {html.escape(repo_full)}</span>
+                  <span>🌿 {html.escape(ref)}</span>
+                  <span>🔖 {sha}</span>
+                  <span>🕐 {fecha}</span>
+                </div>
+              </div>
+              
+              <div class="cards">
+                <div class="card card-total"><div class="card-num num-total">{total_checks}</div><div class="card-label">Checks Evaluados</div></div>
+                <div class="card card-passed"><div class="card-num num-passed">{total_passed}</div><div class="card-label">Checks Exitosos</div></div>
+                <div class="card card-failed"><div class="card-num num-failed">{total_failed}</div><div class="card-label">Vulnerabilidades</div></div>
+              </div>
+              
+              <div class="section">
+                <div class="section-title">Hallazgos — Checkov (Terraform)</div>
+                <div class="wrap">{table}{no_findings}</div>
+              </div>
+              
+              <div class="footer">Generado por <strong>pipelines-centrales</strong> · Equipo Cybersecurity · Simon · {fecha}</div>
+            </body>
+            </html>"""
+
+            out_path = f"{out_dir}/checkov-report.html"
+            with open(out_path, "w", encoding="utf-8") as fh:
+                fh.write(report)
+            print(f"[Checkov HTML] Generado {out_path} con {total_failed} hallazgos.")
+
+        run: |
+          python3 -c "$PYTHON_SCRIPT"
       - name: Subir reporte Checkov
         if: always()
         uses: actions/upload-artifact@v4
