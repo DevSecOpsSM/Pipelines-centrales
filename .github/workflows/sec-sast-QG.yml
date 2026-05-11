@@ -308,7 +308,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GEMMA_API_KEY: ${{ secrets.GEMMA_API_KEY }}
-          GEMINI_MODEL: "gemma-3-27b-it"
+          GEMINI_MODEL: "gemma-4-26b-a4b-it"
         run: |
           pip install requests --quiet
           
