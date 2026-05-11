@@ -303,52 +303,86 @@ jobs:
           retention-days: 30
           if-no-files-found: warn
 
-      - name: Crear Issues en GitHub (Límite 10 por Severidad)
+      - name: Crear Issues en GitHub con Remediación IA (Gemma)
         if: always()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GEMMA_API_KEY: ${{ secrets.GEMMA_API_KEY }}
+          GEMMA_API_URL: "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions" 
         run: |
-          cat << 'EOF' > create_issues.py
-          import json, os, subprocess
+          pip install requests --quiet
+          
+          cat << 'EOF' > create_issues_ia.py
+          import json, os, subprocess, requests
 
           raw_path = 'reports/semgrep-raw.json'
           if not os.path.exists(raw_path):
-              print("[Issues] No se encontró el archivo JSON de Semgrep.")
+              print("[Issues] No se encontró el JSON.")
               exit(0)
 
           try:
               data = json.load(open(raw_path, encoding='utf-8'))
               results = data.get('results', [])
-          except Exception as e:
-              print(f"[Issues] Error leyendo el JSON: {e}")
+          except Exception:
               exit(0)
 
           try:
               cmd_list = ['gh', 'issue', 'list', '--state', 'open', '--json', 'title']
-              existing_issues_raw = subprocess.check_output(cmd_list).decode('utf-8')
-              existing_titles = [i['title'] for i in json.loads(existing_issues_raw)]
-          except Exception as e:
-              print(f"[WARN] No se pudieron leer los issues actuales. {e}")
+              existing_titles = [i['title'] for i in json.loads(subprocess.check_output(cmd_list).decode('utf-8'))]
+          except:
               existing_titles = []
 
+          # ---------------------------------------------------------
+          # MOTOR DE IA: GEMMA + OWASP (RAG Simulado)
+          # ---------------------------------------------------------
+          def obtener_remediacion_gemma(regla, descripcion, archivo, linea):
+              api_key = os.environ.get("GEMMA_API_KEY")
+              api_url = os.environ.get("GEMMA_API_URL")
+              
+              if not api_key or api_url == "https://api.tu-servidor.com/v1/chat/completions":
+                  return "> ⚠️ *Asistencia IA desactivada: Falta configurar GEMMA_API_KEY o la URL de la API.*"
+
+              system_prompt = (
+                  "Eres un Arquitecto DevSecOps estricto. Analizas vulnerabilidades de código. "
+                  "REGLA CRÍTICA: Basa tus recomendaciones ÚNICAMENTE en la 'OWASP Cheat Sheet Series' oficial. "
+                  "Si no conoces un patrón oficial para la vulnerabilidad, responde: 'Requiere revisión manual de Arquitectura'. "
+                  "No inventes librerías. Devuelve solo el bloque de código corregido y una breve explicación."
+              )
+              
+              user_prompt = f"Vulnerabilidad detectada:\nRegla: {regla}\nArchivo: {archivo} (Línea {linea})\nDescripción: {descripcion}\nPor favor, genera el código de remediación."
+
+              try:
+                  headers = {
+                      "Authorization": f"Bearer {api_key}",
+                      "Content-Type": "application/json"
+                  }
+                  payload = {
+                      "model": "gemma-2-9b-it", # Ajusta al nombre exacto de tu modelo desplegado
+                      "messages": [
+                          {"role": "system", "content": system_prompt},
+                          {"role": "user", "content": user_prompt}
+                      ],
+                      "temperature": 0.1 # Muy bajo para evitar alucinaciones
+                  }
+                  
+                  response = requests.post(api_url, headers=headers, json=payload, timeout=20)
+                  response.raise_for_status()
+                  return response.json()['choices'][0]['message']['content'].strip()
+              except Exception as e:
+                  return f"> ⚠️ *Error al contactar a Gemma: {str(e)}*"
+
+          # ---------------------------------------------------------
+          # LÓGICA DE CREACIÓN DE ISSUES
+          # ---------------------------------------------------------
           MAX_ISSUES_PER_SEV = 10
           creados_por_sev = {'ERROR': 0, 'WARNING': 0, 'INFO': 0}
-          
-          # --- NUEVO: Contador real de vulnerabilidades ---
           total_hallazgos_por_sev = {'ERROR': 0, 'WARNING': 0, 'INFO': 0}
           
-          sev_visual = {
-              'ERROR': '🔴 CRÍTICO / ALTO', 
-              'WARNING': '🟡 MEDIO', 
-              'INFO': '🔵 BAJO / INFO'
-          }
-
+          sev_visual = {'ERROR': '🔴 CRÍTICO / ALTO', 'WARNING': '🟡 MEDIO', 'INFO': '🔵 BAJO / INFO'}
           issues_creados_total = 0
 
           for r in results:
               sev = r.get('extra', {}).get('severity', 'INFO').upper()
-              
-              # Siempre contamos el hallazgo para el bloqueo, sin importar los tickets
               total_hallazgos_por_sev[sev] = total_hallazgos_por_sev.get(sev, 0) + 1
               
               if creados_por_sev.get(sev, 0) >= MAX_ISSUES_PER_SEV:
@@ -362,30 +396,36 @@ jobs:
               title = f"🚨 [SAST] Semgrep: {rule} en {filepath}"
               
               if title not in existing_titles:
+                  print(f"🧠 Consultando a Gemma para: {rule}...")
+                  
+                  # LLAMADA A LA IA
+                  remediacion = obtener_remediacion_gemma(rule, msg, filepath, line)
+                  
                   body = (f"### 🛡️ Hallazgo de Seguridad Automatizado\n\n"
                           f"**Herramienta**: Semgrep\n"
                           f"**Severidad**: {sev_visual.get(sev, sev)}\n"
                           f"**Archivo**: `{filepath}` (Línea: {line})\n"
                           f"**Regla**: `{rule}`\n\n"
                           f"**Descripción**:\n> {msg}\n\n"
-                          f"Revise el reporte HTML adjunto en la pestaña de Actions para más detalles.")
+                          f"### 🤖 Propuesta de Remediación (Gemma AI)\n"
+                          f"{remediacion}\n\n"
+                          f"---\n*Nota: Esta remediación fue generada por IA basada en OWASP. Verifique el código antes de implementarlo.*")
                   
                   try:
                       subprocess.run(['gh', 'issue', 'create', '--title', title, '--body', body], check=True)
                       existing_titles.append(title)
                       creados_por_sev[sev] += 1
                       issues_creados_total += 1
-                  except Exception as e:
+                  except:
                       pass
 
           print(f"\n[Issues] Proceso completado. Tickets nuevos creados: {issues_creados_total}")
           
-          # --- LÓGICA DE BLOQUEO CORREGIDA ---
-          # Ahora evalúa los hallazgos reales del JSON, no los tickets creados
+          # --- QUALITY GATE ---
           if total_hallazgos_por_sev['ERROR'] > 0:
-              print(f"\n❌ ATENCIÓN: Se detectaron {total_hallazgos_por_sev['ERROR']} vulnerabilidad(es) de código CRÍTICAS/ALTAS (Semgrep ERROR).")
+              print(f"\n❌ ATENCIÓN: Se detectaron {total_hallazgos_por_sev['ERROR']} vulnerabilidad(es) de código CRÍTICAS/ALTAS.")
               print("🛑 El pipeline fallará para bloquear el pase a producción.")
               exit(1)
           EOF
           
-          python3 create_issues.py
+          python3 create_issues_ia.py
