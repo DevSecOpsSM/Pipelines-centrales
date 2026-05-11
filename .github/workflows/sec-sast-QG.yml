@@ -336,7 +336,7 @@ jobs:
           # MOTOR DE IA: GEMMA + OWASP (RAG Simulado)
           # ---------------------------------------------------------
           # ---------------------------------------------------------
-          # MOTOR DE IA: GEMMA + OWASP (Nativo Google AI Studio)
+          # MOTOR DE IA: GEMMA 4 + OWASP (Nativo Google AI Studio)
           # ---------------------------------------------------------
           def obtener_remediacion_gemma(regla, descripcion, archivo, linea):
               api_key = os.environ.get("GEMMA_API_KEY")
@@ -353,32 +353,34 @@ jobs:
               
               user_prompt = f"Vulnerabilidad detectada:\nRegla: {regla}\nArchivo: {archivo} (Línea {linea})\nDescripción: {descripcion}\nPor favor, genera el código de remediación."
 
-              # Endpoint NATIVO de Google para el modelo Gemma 2 (9B Instruction Tuned)
-              api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemma-2-9b-it:generateContent?key={api_key}"
+              # Endpoint NATIVO de Google apuntando a Gemma 4
+              api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemma-4-26b-a4b-it:generateContent?key={api_key}"
 
               try:
                   headers = {
                       "Content-Type": "application/json"
                   }
-                  # Payload nativo de Google AI (no compatible con OpenAI)
+                  # Payload con la estructura oficial de Google AI (distinta a la de OpenAI)
                   payload = {
                       "contents": [{
                           "parts": [{"text": system_prompt + user_prompt}]
                       }],
                       "generationConfig": {
-                          "temperature": 0.1 # Muy bajo para respuestas técnicas precisas
+                          "temperature": 0.1 # Muy bajo para evitar alucinaciones
                       }
                   }
                   
                   response = requests.post(api_url, headers=headers, json=payload, timeout=20)
-                  response.raise_for_status() # Lanza error si no es 200 OK
+                  response.raise_for_status() 
                   
                   data = response.json()
                   return data['candidates'][0]['content']['parts'][0]['text'].strip()
                   
+              except requests.exceptions.HTTPError as e:
+                  err_msg = e.response.text if e.response else str(e)
+                  return f"> ⚠️ *Error HTTP al contactar a Gemma: {e.response.status_code} - {err_msg}*"
               except Exception as e:
                   return f"> ⚠️ *Error al contactar a Gemma: {str(e)}*"
-
           # ---------------------------------------------------------
           # LÓGICA DE CREACIÓN DE ISSUES
           # ---------------------------------------------------------
