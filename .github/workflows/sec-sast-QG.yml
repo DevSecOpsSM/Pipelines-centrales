@@ -357,7 +357,7 @@ jobs:
                       "Content-Type": "application/json"
                   }
                   payload = {
-                      "model": "gemma-2-9b-it", # Ajusta al nombre exacto de tu modelo desplegado
+                      "model": "gemma-4-26b-a4b-it", # Ajusta al nombre exacto de tu modelo desplegado
                       "messages": [
                           {"role": "system", "content": system_prompt},
                           {"role": "user", "content": user_prompt}
