@@ -308,7 +308,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GEMMA_API_KEY: ${{ secrets.GEMMA_API_KEY }}
-          GEMMA_API_URL: "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions" 
+          GEMINI_MODEL: "gemma-3-27b-it"
         run: |
           pip install requests --quiet
           
@@ -333,54 +333,72 @@ jobs:
               existing_titles = []
 
           # ---------------------------------------------------------
-          # MOTOR DE IA: GEMMA + OWASP (RAG Simulado)
-          # ---------------------------------------------------------
-          # ---------------------------------------------------------
-          # MOTOR DE IA: GEMMA 4 + OWASP (Nativo Google AI Studio)
+          # MOTOR DE IA: Gemma (Google AI Studio) + OWASP Cheat Sheet
+          # Endpoint nativo: /v1beta/models/{model}:generateContent?key=
+          # NOTA: Gemma no soporta system_instruction → se usa multi-turn
+          # para que el modelo internalice el rol antes del user prompt.
           # ---------------------------------------------------------
           def obtener_remediacion_gemma(regla, descripcion, archivo, linea):
               api_key = os.environ.get("GEMMA_API_KEY")
-              
               if not api_key:
-                  return "> ⚠️ *Asistencia IA desactivada: Falta configurar GEMMA_API_KEY.*"
+                  return "> ⚠️ *Asistencia IA desactivada: Falta configurar el secret GEMMA_API_KEY.*"
 
-              system_prompt = (
+              model   = os.environ.get("GEMINI_MODEL", "gemma-3-27b-it")
+              api_url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+
+              system_context = (
                   "Eres un Arquitecto DevSecOps estricto. Analizas vulnerabilidades de código. "
                   "REGLA CRÍTICA: Basa tus recomendaciones ÚNICAMENTE en la 'OWASP Cheat Sheet Series' oficial. "
                   "Si no conoces un patrón oficial para la vulnerabilidad, responde: 'Requiere revisión manual de Arquitectura'. "
-                  "No inventes librerías. Devuelve solo el bloque de código corregido y una breve explicación.\n\n"
+                  "No inventes librerías. Devuelve solo el bloque de código corregido y una breve explicación."
               )
-              
-              user_prompt = f"Vulnerabilidad detectada:\nRegla: {regla}\nArchivo: {archivo} (Línea {linea})\nDescripción: {descripcion}\nPor favor, genera el código de remediación."
-
-              # Endpoint NATIVO de Google apuntando a Gemma 4
-              api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
+              user_prompt = (
+                  f"Vulnerabilidad detectada:\n"
+                  f"Regla: {regla}\n"
+                  f"Archivo: {archivo} (Línea {linea})\n"
+                  f"Descripción: {descripcion}\n"
+                  f"Por favor, genera el código de remediación."
+              )
 
               try:
-                  headers = {
-                      "Content-Type": "application/json"
-                  }
-                  # Payload con la estructura oficial de Google AI (distinta a la de OpenAI)
+                  headers = {"Content-Type": "application/json"}
+                  # Gemma usa multi-turn: user → model (ACK) → user (pregunta real)
+                  # para que el rol/sistema quede anclado antes del prompt.
                   payload = {
-                      "contents": [{
-                          "parts": [{"text": system_prompt + user_prompt}]
-                      }],
+                      "contents": [
+                          {
+                              "role": "user",
+                              "parts": [{"text": system_context}]
+                          },
+                          {
+                              "role": "model",
+                              "parts": [{"text": "Entendido. Actuaré exclusivamente según la OWASP Cheat Sheet Series."}]
+                          },
+                          {
+                              "role": "user",
+                              "parts": [{"text": user_prompt}]
+                          }
+                      ],
                       "generationConfig": {
-                          "temperature": 0.1 # Muy bajo para evitar alucinaciones
+                          "temperature": 0.1,
+                          "maxOutputTokens": 2048
                       }
                   }
-                  
-                  response = requests.post(api_url, headers=headers, json=payload, timeout=20)
-                  response.raise_for_status() 
-                  
+
+                  response = requests.post(api_url, headers=headers, json=payload, timeout=45)
+                  response.raise_for_status()
+
                   data = response.json()
                   return data['candidates'][0]['content']['parts'][0]['text'].strip()
-                  
+
+              except requests.exceptions.Timeout:
+                  return "> ⚠️ *Timeout: Gemma tardó demasiado. Requiere revisión manual.*"
               except requests.exceptions.HTTPError as e:
-                  err_msg = e.response.text if e.response else str(e)
-                  return f"> ⚠️ *Error HTTP al contactar a Gemma: {e.response.status_code} - {err_msg}*"
+                  code     = e.response.status_code if e.response else "?"
+                  err_body = (e.response.text[:300] if e.response else str(e))
+                  return f"> ⚠️ *Error HTTP {code} al contactar a Gemma: `{err_body}`*"
               except Exception as e:
-                  return f"> ⚠️ *Error al contactar a Gemma: {str(e)}*"
+                  return f"> ⚠️ *Error inesperado al contactar a Gemma: {str(e)}*"
           # ---------------------------------------------------------
           # LÓGICA DE CREACIÓN DE ISSUES
           # ---------------------------------------------------------
@@ -417,7 +435,7 @@ jobs:
                           f"**Archivo**: `{filepath}` (Línea: {line})\n"
                           f"**Regla**: `{rule}`\n\n"
                           f"**Descripción**:\n> {msg}\n\n"
-                          f"### 🤖 Propuesta de Remediación (Gemma AI)\n"
+                          f"### 🤖 Propuesta de Remediación (Gemma AI — OWASP)\n"
                           f"{remediacion}\n\n"
                           f"---\n*Nota: Esta remediación fue generada por IA basada en OWASP. Verifique el código antes de implementarlo.*")
                   
