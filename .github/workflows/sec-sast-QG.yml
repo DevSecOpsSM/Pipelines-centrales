@@ -335,39 +335,47 @@ jobs:
           # ---------------------------------------------------------
           # MOTOR DE IA: GEMMA + OWASP (RAG Simulado)
           # ---------------------------------------------------------
+          # ---------------------------------------------------------
+          # MOTOR DE IA: GEMMA + OWASP (Nativo Google AI Studio)
+          # ---------------------------------------------------------
           def obtener_remediacion_gemma(regla, descripcion, archivo, linea):
               api_key = os.environ.get("GEMMA_API_KEY")
-              api_url = os.environ.get("GEMMA_API_URL")
               
-              if not api_key or api_url == "https://api.tu-servidor.com/v1/chat/completions":
-                  return "> ⚠️ *Asistencia IA desactivada: Falta configurar GEMMA_API_KEY o la URL de la API.*"
+              if not api_key:
+                  return "> ⚠️ *Asistencia IA desactivada: Falta configurar GEMMA_API_KEY.*"
 
               system_prompt = (
                   "Eres un Arquitecto DevSecOps estricto. Analizas vulnerabilidades de código. "
                   "REGLA CRÍTICA: Basa tus recomendaciones ÚNICAMENTE en la 'OWASP Cheat Sheet Series' oficial. "
                   "Si no conoces un patrón oficial para la vulnerabilidad, responde: 'Requiere revisión manual de Arquitectura'. "
-                  "No inventes librerías. Devuelve solo el bloque de código corregido y una breve explicación."
+                  "No inventes librerías. Devuelve solo el bloque de código corregido y una breve explicación.\n\n"
               )
               
               user_prompt = f"Vulnerabilidad detectada:\nRegla: {regla}\nArchivo: {archivo} (Línea {linea})\nDescripción: {descripcion}\nPor favor, genera el código de remediación."
 
+              # Endpoint NATIVO de Google para el modelo Gemma 2 (9B Instruction Tuned)
+              api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemma-2-9b-it:generateContent?key={api_key}"
+
               try:
                   headers = {
-                      "Authorization": f"Bearer {api_key}",
                       "Content-Type": "application/json"
                   }
+                  # Payload nativo de Google AI (no compatible con OpenAI)
                   payload = {
-                      "model": "gemma-4-26b-a4b-it", # Ajusta al nombre exacto de tu modelo desplegado
-                      "messages": [
-                          {"role": "system", "content": system_prompt},
-                          {"role": "user", "content": user_prompt}
-                      ],
-                      "temperature": 0.1 # Muy bajo para evitar alucinaciones
+                      "contents": [{
+                          "parts": [{"text": system_prompt + user_prompt}]
+                      }],
+                      "generationConfig": {
+                          "temperature": 0.1 # Muy bajo para respuestas técnicas precisas
+                      }
                   }
                   
                   response = requests.post(api_url, headers=headers, json=payload, timeout=20)
-                  response.raise_for_status()
-                  return response.json()['choices'][0]['message']['content'].strip()
+                  response.raise_for_status() # Lanza error si no es 200 OK
+                  
+                  data = response.json()
+                  return data['candidates'][0]['content']['parts'][0]['text'].strip()
+                  
               except Exception as e:
                   return f"> ⚠️ *Error al contactar a Gemma: {str(e)}*"
 
