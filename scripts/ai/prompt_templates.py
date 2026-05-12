@@ -8,8 +8,10 @@ system_context de cada herramienta en TOOL_CONFIG.
 SOURCES = {
     "owasp_cheatsheet": "OWASP Cheat Sheet Series (https://cheatsheetseries.owasp.org)",
     "cwe":              "MITRE CWE (https://cwe.mitre.org)",
-    # "cis":  "CIS Benchmarks (https://www.cisecurity.org/cis-benchmarks)",
-    # "nist": "NIST SP 800-53",
+    "nist_800_53":      "NIST SP 800-53 Rev. 5 (https://csrc.nist.gov/publications/detail/sp/800-53/rev-5/final)",
+    "nist_800_190":     "NIST SP 800-190 — Application Container Security Guide (https://csrc.nist.gov/publications/detail/sp/800-190/final)",
+    "mozilla":          "Mozilla Security Guidelines (https://infosec.mozilla.org/guidelines/)",
+    # "cis": "CIS Benchmarks (https://www.cisecurity.org/cis-benchmarks)",
 }
 
 # ── Etiquetas de severidad reutilizadas en múltiples herramientas ─────────────
@@ -169,7 +171,7 @@ TOOL_CONFIG: dict = {
     "semgrep": {
         "display_name":     "Semgrep",
         "label":            "SAST",
-        "system_context":   _build_context(["owasp_cheatsheet", "cwe"]),
+        "system_context":   _build_context(["owasp_cheatsheet", "cwe", "nist_800_53", "mozilla"]),
         "extract":          _extract_semgrep,
         "max_per_sev":      {"ERROR": 10, "WARNING": 5, "INFO": 3},
         "sev_visual":       {"ERROR": _SEV_CRITICAL_HIGH, "WARNING": _SEV_MEDIUM, "INFO": _SEV_LOW_INFO},
@@ -180,7 +182,7 @@ TOOL_CONFIG: dict = {
     "gitleaks": {
         "display_name":     "Gitleaks",
         "label":            "Secrets",
-        "system_context":   _build_context(["owasp_cheatsheet", "cwe"]),
+        "system_context":   _build_context(["owasp_cheatsheet", "cwe", "nist_800_53", "mozilla"]),
         "extract":          _extract_gitleaks,
         "max_per_sev":      {"ERROR": 15, "WARNING": 10, "INFO": 5},
         "sev_visual":       {"ERROR": _SEV_CRITICAL},
@@ -191,7 +193,7 @@ TOOL_CONFIG: dict = {
     "kics": {
         "display_name":     "KICS",
         "label":            "IaC",
-        "system_context":   _build_context(["owasp_cheatsheet", "cwe"]),
+        "system_context":   _build_context(["owasp_cheatsheet", "cwe", "nist_800_53", "nist_800_190"]),
         "extract":          _extract_kics,
         "max_per_sev":      {"ERROR": 10, "WARNING": 5, "INFO": 2},
         "sev_visual":       {"ERROR": _SEV_CRITICAL_HIGH, "WARNING": _SEV_MEDIUM, "INFO": _SEV_LOW},
@@ -202,7 +204,7 @@ TOOL_CONFIG: dict = {
     "trivy": {
         "display_name":     "Trivy",
         "label":            "Container",
-        "system_context":   _build_context(["owasp_cheatsheet", "cwe"]),
+        "system_context":   _build_context(["owasp_cheatsheet", "cwe", "nist_800_53", "nist_800_190"]),
         "extract":          _extract_trivy,
         "max_per_sev":      {"ERROR": 10, "WARNING": 5, "INFO": 2},
         "sev_visual":       {"ERROR": _SEV_CRITICAL_HIGH, "WARNING": _SEV_MEDIUM, "INFO": _SEV_LOW},
@@ -213,7 +215,7 @@ TOOL_CONFIG: dict = {
     "dependency-check": {
         "display_name":     "OWASP Dependency-Check",
         "label":            "SCA",
-        "system_context":   _build_context(["owasp_cheatsheet", "cwe"]),
+        "system_context":   _build_context(["owasp_cheatsheet", "cwe", "nist_800_53", "mozilla"]),
         "extract":          _extract_dependency_check,
         "max_per_sev":      {"ERROR": 10, "WARNING": 5, "INFO": 2},
         "sev_visual":       {"ERROR": _SEV_CRITICAL_HIGH, "WARNING": _SEV_MEDIUM, "INFO": _SEV_LOW},
