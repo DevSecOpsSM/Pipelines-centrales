@@ -304,12 +304,11 @@ jobs:
 
       - name: Obtener scripts de IA (pipelines-centrales)
         if: always()
-        continue-on-error: true
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ github.repository_owner }}/pipelines-centrales
-          path: .ai-scripts
-          token: ${{ secrets.PIPELINE_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p .ai-scripts/scripts/ai
+          RAW="https://raw.githubusercontent.com/${{ github.repository_owner }}/pipelines-centrales/main/scripts/ai"
+          curl -fsSL "${RAW}/gemma_client.py"     -o .ai-scripts/scripts/ai/gemma_client.py     || true
+          curl -fsSL "${RAW}/prompt_templates.py" -o .ai-scripts/scripts/ai/prompt_templates.py  || true
 
       - name: Crear Issues con Remediación IA — Quality Gate (KICS)
         if: always()
@@ -854,12 +853,11 @@ jobs:
 
       - name: Obtener scripts de IA (pipelines-centrales)
         if: always()
-        continue-on-error: true
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ github.repository_owner }}/pipelines-centrales
-          path: .ai-scripts
-          token: ${{ secrets.PIPELINE_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p .ai-scripts/scripts/ai
+          RAW="https://raw.githubusercontent.com/${{ github.repository_owner }}/pipelines-centrales/main/scripts/ai"
+          curl -fsSL "${RAW}/gemma_client.py"     -o .ai-scripts/scripts/ai/gemma_client.py     || true
+          curl -fsSL "${RAW}/prompt_templates.py" -o .ai-scripts/scripts/ai/prompt_templates.py  || true
 
       - name: Crear Issues con Remediación IA — Quality Gate (Trivy)
         if: always()
