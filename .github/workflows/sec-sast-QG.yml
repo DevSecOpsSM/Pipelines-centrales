@@ -305,11 +305,12 @@ jobs:
 
       - name: Obtener scripts de IA (pipelines-centrales)
         if: always()
+        continue-on-error: true
         uses: actions/checkout@v4
         with:
           repository: ${{ github.repository_owner }}/pipelines-centrales
           path: .ai-scripts
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.PIPELINE_TOKEN || secrets.GITHUB_TOKEN }}
 
       - name: Crear Issues con Remediación IA — Quality Gate
         if: always()
@@ -318,7 +319,14 @@ jobs:
           GEMMA_API_KEY: ${{ secrets.GEMMA_API_KEY }}
           GEMINI_MODEL: "gemma-4-26b-a4b-it"
         run: |
+          SCRIPT=".ai-scripts/scripts/ai/gemma_client.py"
+          if [ ! -f "$SCRIPT" ]; then
+            echo "⚠️  Checkout de pipelines-centrales falló — repo privado sin acceso."
+            echo "Solución A: Hacer público pipelines-centrales."
+            echo "Solución B: Configurar PIPELINE_TOKEN como secreto de organización."
+            exit 0
+          fi
           pip install requests --quiet
-          python .ai-scripts/scripts/ai/gemma_client.py \
+          python "$SCRIPT" \
             --tool semgrep \
             --results reports/semgrep-raw.json
