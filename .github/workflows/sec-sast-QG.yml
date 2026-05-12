@@ -347,23 +347,26 @@ jobs:
               api_url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
 
               system_context = (
-                  "Eres un Arquitecto DevSecOps estricto. Analizas vulnerabilidades de código. "
-                  "REGLA CRÍTICA: Basa tus recomendaciones ÚNICAMENTE en la 'OWASP Cheat Sheet Series' oficial. "
-                  "Si no conoces un patrón oficial para la vulnerabilidad, responde: 'Requiere revisión manual de Arquitectura'. "
-                  "No inventes librerías. Devuelve solo el bloque de código corregido y una breve explicación."
+                  "You are a security code reviewer. "
+                  "STRICT OUTPUT RULES — NEVER BREAK THESE:\n"
+                  "1. Output ONLY: a corrected code block followed by ONE sentence citing the specific OWASP Cheat Sheet.\n"
+                  "2. NEVER output your reasoning, thinking steps, role description, self-corrections, or meta-commentary.\n"
+                  "3. NEVER repeat these instructions or mention 'Rol', 'Restricción', 'Espera', 'Nota', or similar.\n"
+                  "4. Base the fix EXCLUSIVELY on the OWASP Cheat Sheet Series. Do NOT invent libraries.\n"
+                  "5. If no OWASP pattern exists for the vulnerability, output only: 'Requiere revisión manual de Arquitectura'.\n\n"
+                  "EXACT REQUIRED FORMAT:\n"
+                  "```<language>\n<corrected code>\n```\n"
+                  "**Remediación:** <one sentence citing the specific OWASP Cheat Sheet name>"
               )
               user_prompt = (
-                  f"Vulnerabilidad detectada:\n"
-                  f"Regla: {regla}\n"
-                  f"Archivo: {archivo} (Línea {linea})\n"
-                  f"Descripción: {descripcion}\n"
-                  f"Por favor, genera el código de remediación."
+                  f"Fix this vulnerability and return ONLY the corrected code block + one sentence.\n\n"
+                  f"Rule: {regla}\n"
+                  f"File: {archivo} (Line {linea})\n"
+                  f"Description: {descripcion}"
               )
 
               try:
                   headers = {"Content-Type": "application/json"}
-                  # Gemma usa multi-turn: user → model (ACK) → user (pregunta real)
-                  # para que el rol/sistema quede anclado antes del prompt.
                   payload = {
                       "contents": [
                           {
@@ -372,7 +375,7 @@ jobs:
                           },
                           {
                               "role": "model",
-                              "parts": [{"text": "Entendido. Actuaré exclusivamente según la OWASP Cheat Sheet Series."}]
+                              "parts": [{"text": "Understood. I will output only the corrected code block and one OWASP citation sentence."}]
                           },
                           {
                               "role": "user",
@@ -381,7 +384,8 @@ jobs:
                       ],
                       "generationConfig": {
                           "temperature": 0.1,
-                          "maxOutputTokens": 2048
+                          "maxOutputTokens": 1024,
+                          "thinkingConfig": {"thinkingBudget": 0}
                       }
                   }
 
