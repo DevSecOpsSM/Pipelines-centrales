@@ -317,7 +317,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GEMMA_API_KEY: ${{ secrets.GEMMA_API_KEY }}
-          GEMINI_MODEL: "gemma-4-26b-a4b-it"
+          GEMINI_MODEL: "gemini-2.5-flash"
           QG_SCRIPT: |
             import json, sys
             try:

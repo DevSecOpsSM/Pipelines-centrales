@@ -225,7 +225,7 @@ def run(tool: str, results_path: str) -> None:
 
     # Inicializar cliente IA y gestor de issues
     api_key = os.environ.get("GEMMA_API_KEY", "")
-    model   = os.environ.get("GEMINI_MODEL", "gemma-4-26b-a4b-it")
+    model   = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
     ai      = GemmaClient(api_key, model) if api_key else None
     issues  = IssueManager()
 
