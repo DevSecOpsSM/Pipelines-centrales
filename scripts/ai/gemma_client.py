@@ -56,22 +56,31 @@ class GemmaClient:
         }
 
     def _call_api(self, url: str, headers: dict, payload: dict) -> tuple:
-        """Single API attempt. Returns (result, error_msg, should_retry)."""
+        """Single API attempt. Returns (result, error_msg, retry_wait_seconds).
+        retry_wait=0 means no retry; >0 means wait that many seconds then retry."""
         try:
             resp = requests.post(url, headers=headers, json=payload, timeout=45)
             resp.raise_for_status()
             raw = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
-            return self._clean(raw), None, False
+            return self._clean(raw), None, 0
         except requests.exceptions.Timeout:
-            return None, "> ⚠️ *Timeout tras 45s. Requiere revisión manual.*", False
+            return None, "> ⚠️ *Timeout tras 45s. Requiere revisión manual.*", 0
         except requests.exceptions.HTTPError as e:
             code = e.response.status_code if e.response else 0
+            if code == 0:
+                raw_msg = str(e)
+                if "429" in raw_msg:
+                    code = 429
+                elif "500" in raw_msg:
+                    code = 500
+            if code == 429:
+                return None, None, 65   # rate limit: esperar 65s (bucket renueva en 60s)
             if code == 500:
-                return None, None, True
+                return None, None, 8    # server error: backoff exponencial
             body = e.response.text[:300] if e.response else str(e)
-            return None, f"> ⚠️ *Error HTTP {code} contactando Gemma: `{body}`*", False
+            return None, f"> ⚠️ *Error HTTP {code}: `{body}`*", 0
         except Exception as e:
-            return None, f"> ⚠️ *Error inesperado: {str(e)}*", False
+            return None, f"> ⚠️ *Error inesperado: {str(e)}*", 0
 
     def ask(self, system_context: str, user_prompt: str) -> str:
         url     = f"{self.BASE_URL}/{self.model}:generateContent?key={self.api_key}"
@@ -79,14 +88,17 @@ class GemmaClient:
         payload = self._build_payload(system_context, user_prompt)
 
         for attempt in range(3):
-            result, error, retry = self._call_api(url, headers, payload)
+            result, error, retry_wait = self._call_api(url, headers, payload)
             if result is not None:
                 return result
-            if not retry:
+            if retry_wait == 0:
                 return error
-            time.sleep(8 * (attempt + 1))   # 8s → 16s
+            # 429 → siempre 65s; 500 → exponencial (8s, 16s, 24s)
+            wait = retry_wait if retry_wait >= 60 else retry_wait * (attempt + 1)
+            print(f"   ⏳ Esperando {wait}s antes de reintentar (intento {attempt + 1}/3)...")
+            time.sleep(wait)
 
-        return "> ⚠️ *Sin respuesta tras 3 intentos (500). Requiere revisión manual.*"
+        return "> ⚠️ *Sin respuesta tras 3 intentos. Requiere revisión manual.*"
 
     @staticmethod
     def _clean(raw: str) -> str:
