@@ -392,7 +392,21 @@ jobs:
                   response.raise_for_status()
 
                   data = response.json()
-                  return data['candidates'][0]['content']['parts'][0]['text'].strip()
+                  raw = data['candidates'][0]['content']['parts'][0]['text'].strip()
+
+                  # Post-proceso: Gemma 4 expone su razonamiento en el output.
+                  # Extraemos solo el último bloque de código y la línea de remediación.
+                  import re
+                  code_blocks  = re.findall(r'```[\s\S]*?```', raw)
+                  remediacines = re.findall(r'(?:\*\*)?[Rr]emediaci[oó]n:?(?:\*\*)?\s*(.+)', raw)
+
+                  parts = []
+                  if code_blocks:
+                      parts.append(code_blocks[-1])
+                  if remediacines:
+                      parts.append(f"**Remediación:** {remediacines[-1].strip()}")
+
+                  return '\n\n'.join(parts) if parts else raw
 
               except requests.exceptions.Timeout:
                   return "> ⚠️ *Timeout: Gemma tardó demasiado. Requiere revisión manual.*"
