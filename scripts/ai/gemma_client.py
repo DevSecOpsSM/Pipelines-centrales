@@ -75,7 +75,7 @@ class GemmaClient:
                     code = 500
             if code == 429:
                 return None, None, 65   # rate limit: esperar 65s (bucket renueva en 60s)
-            if code == 500:
+            if code in (500, 503):
                 return None, None, 8    # server error: backoff exponencial
             body = e.response.text[:300] if e.response else str(e)
             return None, f"> ⚠️ *Error HTTP {code}: `{body}`*", 0
@@ -259,6 +259,8 @@ def run(tool: str, results_path: str) -> None:
         if _process_finding(finding, config, ai, issues):
             counts[sev] = counts.get(sev, 0) + 1
             created += 1
+        if ai:
+            time.sleep(5)  # ~12 RPM — margen bajo el límite de 15 RPM del free tier
 
     # Resumen
     print(f"\n[AI] Proceso completado — Issues nuevos: {created}")
