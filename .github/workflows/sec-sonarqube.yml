@@ -167,11 +167,24 @@ jobs:
           fi
 
       # ─── Node / JS / TS ──────────────────────────────────────
+      # IMPORTANTE: usamos pnpm/action-setup en lugar de corepack porque corepack
+      # tiene un bug conocido en runners self-hosted con cache corrupto que produce
+      # ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING. La acción oficial de pnpm instala
+      # el binario directamente, evitando completamente el shim de corepack.
+      - name: Setup pnpm
+        if: steps.detect.outputs.has_node == 'true'
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9               # versión estable (cambiar a 10/latest si el repo lo requiere)
+          run_install: false
+
       - name: Setup Node.js
         if: steps.detect.outputs.has_node == 'true'
         uses: actions/setup-node@v4
         with:
           node-version: "20"
+          # NO usar cache: 'pnpm' aquí — falla si el repo no tiene pnpm-lock.yaml
+          # y nuestro workflow debe ser universal (acepta cualquier lockfile)
 
       - name: Tests Node (pnpm test --coverage)
         if: steps.detect.outputs.has_node == 'true'
@@ -184,12 +197,15 @@ jobs:
           set +e   # Modo auditoría: no abortar el step
           mkdir -p reports
 
-          # ── Activar pnpm vía corepack (gestor único para todo el workflow) ─
-          corepack enable 2>/dev/null || npm install -g pnpm@latest >/dev/null 2>&1
-          corepack prepare pnpm@latest --activate 2>/dev/null || true
-
           echo "Node:  $(node --version)"
           echo "pnpm:  $(pnpm --version 2>/dev/null || echo 'no instalado')"
+
+          if ! command -v pnpm >/dev/null 2>&1; then
+            echo "❌ pnpm no está disponible en el PATH del runner."
+            echo "Verifica que el step 'Setup pnpm' (pnpm/action-setup@v4) se haya ejecutado correctamente."
+            echo "ran=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
           # ── Instalar dependencias con pnpm ─────────────────────
           # pnpm install acepta:
