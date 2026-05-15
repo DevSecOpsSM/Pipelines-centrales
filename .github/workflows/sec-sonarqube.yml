@@ -181,12 +181,18 @@ jobs:
         if: steps.detect.outputs.has_node == 'true'
         id: detect_pm
         run: |
+          # IMPORTANTE: usar grep (no node) porque este step se ejecuta ANTES
+          # de actions/setup-node, y el self-hosted runner puede no tener node
+          # en el PATH a este punto. Si usáramos `node -e`, el comando fallaría
+          # silenciosamente (2>/dev/null) y caería al else aunque el repo SÍ
+          # declare packageManager → conflicto con pnpm/action-setup.
           if [ ! -f "package.json" ]; then
+            echo "package.json no encontrado en la raíz"
             echo "has_pm_field=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          if node -e "const p=require('./package.json');process.exit(p.packageManager?0:1)" 2>/dev/null; then
-            PM_DECL=$(node -e "const p=require('./package.json');console.log(p.packageManager)")
+          if grep -qE '"packageManager"[[:space:]]*:' package.json; then
+            PM_DECL=$(grep -oE '"packageManager"[[:space:]]*:[[:space:]]*"[^"]*"' package.json | head -1 | sed 's/.*:[[:space:]]*"\([^"]*\)".*/\1/')
             echo "Repo declara packageManager: $PM_DECL — respetando esa versión"
             echo "has_pm_field=true" >> "$GITHUB_OUTPUT"
           else
