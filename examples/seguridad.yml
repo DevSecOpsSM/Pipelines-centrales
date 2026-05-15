@@ -62,6 +62,23 @@ jobs:
     uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-iac-checkov.yml@main
 
   # ──────────────────────────────────────────────────────────────────────
+  # ETAPA 5 — SAST + Coverage (SonarQube on-prem)
+  # Requiere: secreto SONAR_TOKEN configurado a nivel repo u organización
+  # Runner: self-hosted en la red interna con acceso al SonarQube :9005
+  # ──────────────────────────────────────────────────────────────────────
+  sonarqube:
+    name: "Etapa 5 · SonarQube (SAST + Coverage)"
+    uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-sonarqube.yml@main
+    # Inputs opcionales — descomenta si necesitas overrides
+    # with:
+    #   sonar-host-url: "http://sonar.miempresa.internal:9005"
+    #   sonar-project-key: "mi-proyecto-customkey"
+    #   runner-label: "self-hosted"
+    #   coverage-threshold: 80
+    secrets:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+  # ──────────────────────────────────────────────────────────────────────
   # RESUMEN — Step summary visible en la UI de GitHub Actions
   # ──────────────────────────────────────────────────────────────────────
   resumen:
@@ -73,6 +90,7 @@ jobs:
       - sast
       - contenedores
       - iac
+      - sonarqube
 
     steps:
       - name: Generar resumen en GitHub Actions UI
@@ -93,6 +111,7 @@ jobs:
           | 2 | SAST | Semgrep (OWASP Top 10) | $(STATUS_ICON "${{ needs.sast.result }}") ${{ needs.sast.result }} |
           | 3 | Container Security | KICS · Hadolint · Trivy | $(STATUS_ICON "${{ needs.contenedores.result }}") ${{ needs.contenedores.result }} |
           | 4 | Infraestructura | Checkov (Terraform) | $(STATUS_ICON "${{ needs.iac.result }}") ${{ needs.iac.result }} |
+          | 5 | SAST + Coverage | SonarQube | $(STATUS_ICON "${{ needs.sonarqube.result }}") ${{ needs.sonarqube.result }} |
           
           > 📋 Los reportes HTML detallados están disponibles en la pestaña **Artifacts** de este workflow run.
           >
@@ -106,7 +125,7 @@ jobs:
   # ──────────────────────────────────────────────────────────────────────
   empaquetar-reportes:
     name: "📦 Consolidar Reportes"
-    needs: [secretos, sast, contenedores, iac]
+    needs: [secretos, sast, contenedores, iac, sonarqube]
     if: always()
     runs-on: ubuntu-latest
     # Se eleva el permiso LOCALMENTE para poder borrar los artefactos vía API

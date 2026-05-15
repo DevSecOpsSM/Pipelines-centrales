@@ -1,0 +1,784 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# SSDLC · Etapa 6 — SAST + Coverage (SonarQube)
+# Herramienta: SonarQube (servidor on-prem) + sonar-scanner-cli
+# Universal: detecta lenguaje y ejecuta tests + coverage por defecto
+# Modo Auditoría: reporta hallazgos sin bloquear el pipeline
+# Self-hosted runner: alcanza el servidor SonarQube en red interna
+# ═══════════════════════════════════════════════════════════════════════════
+
+name: Security - SAST + Coverage (SonarQube)
+
+on:
+  workflow_call:
+    inputs:
+      sonar-host-url:
+        description: "URL del servidor SonarQube alcanzable desde el runner"
+        type: string
+        required: false
+        default: "http://localhost:9005"
+      sonar-project-key:
+        description: "Clave del proyecto en SonarQube (vacío = nombre del repo)"
+        type: string
+        required: false
+        default: ""
+      runner-label:
+        description: "Etiqueta del runner que tiene visibilidad del servidor"
+        type: string
+        required: false
+        default: "self-hosted"
+      coverage-threshold:
+        description: "Umbral mínimo de coverage (informativo, no bloquea)"
+        type: number
+        required: false
+        default: 80
+    secrets:
+      SONAR_TOKEN:
+        description: "Token SonarQube con permiso 'Execute Analysis'"
+        required: true
+
+jobs:
+  sonarqube:
+    name: "SonarQube — SAST + Coverage"
+    runs-on: ${{ inputs.runner-label }}
+    permissions:
+      contents: read
+
+    env:
+      SONAR_HOST_URL: ${{ inputs.sonar-host-url }}
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      COVERAGE_THRESHOLD: ${{ inputs.coverage-threshold }}
+
+    steps:
+      - name: Checkout repositorio
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # SonarQube necesita historial completo para blame/SCM
+
+      - name: Resolver project key
+        id: key
+        run: |
+          PK="${{ inputs.sonar-project-key }}"
+          if [ -z "$PK" ]; then
+            PK="${{ github.event.repository.name }}"
+          fi
+          echo "project_key=$PK" >> "$GITHUB_OUTPUT"
+          echo "Project key: $PK"
+
+      - name: Crear directorio de reportes
+        run: mkdir -p "reports/${{ github.event.repository.name }}"
+
+      # ════════════════════════════════════════════════════════════
+      # 1. DETECCIÓN AUTOMÁTICA DE LENGUAJES
+      # ════════════════════════════════════════════════════════════
+      - name: Detectar lenguajes del repositorio
+        id: detect
+        run: |
+          HAS_PYTHON=false
+          HAS_NODE=false
+          HAS_JAVA_MAVEN=false
+          HAS_JAVA_GRADLE=false
+          HAS_GO=false
+          HAS_DOTNET=false
+          HAS_RUBY=false
+          ANY_TESTS=false
+
+          # Python
+          if [ -f "requirements.txt" ] || [ -f "pyproject.toml" ] || [ -f "setup.py" ] || \
+             find . -name "*.py" -not -path "./.git/*" -not -path "./node_modules/*" -not -path "./.venv/*" 2>/dev/null | head -1 | grep -q .; then
+            HAS_PYTHON=true
+          fi
+
+          # Node / JavaScript / TypeScript
+          [ -f "package.json" ] && HAS_NODE=true
+
+          # Java
+          [ -f "pom.xml" ] && HAS_JAVA_MAVEN=true
+          { [ -f "build.gradle" ] || [ -f "build.gradle.kts" ]; } && HAS_JAVA_GRADLE=true
+
+          # Go
+          [ -f "go.mod" ] && HAS_GO=true
+
+          # .NET
+          find . -maxdepth 4 -name "*.csproj" -not -path "./.git/*" 2>/dev/null | head -1 | grep -q . && HAS_DOTNET=true
+
+          # Ruby
+          [ -f "Gemfile" ] && HAS_RUBY=true
+
+          # Detección de presencia de tests (informativa)
+          if find . -type d \( -name "tests" -o -name "test" -o -name "__tests__" -o -name "spec" \) -not -path "./.git/*" 2>/dev/null | head -1 | grep -q . ; then
+            ANY_TESTS=true
+          fi
+          find . -name "*_test.go" -not -path "./.git/*" 2>/dev/null | head -1 | grep -q . && ANY_TESTS=true
+          find . -name "*.test.js" -o -name "*.test.ts" -o -name "*.spec.js" -o -name "*.spec.ts" 2>/dev/null | head -1 | grep -q . && ANY_TESTS=true
+
+          echo "has_python=$HAS_PYTHON"             >> "$GITHUB_OUTPUT"
+          echo "has_node=$HAS_NODE"                 >> "$GITHUB_OUTPUT"
+          echo "has_java_maven=$HAS_JAVA_MAVEN"     >> "$GITHUB_OUTPUT"
+          echo "has_java_gradle=$HAS_JAVA_GRADLE"   >> "$GITHUB_OUTPUT"
+          echo "has_go=$HAS_GO"                     >> "$GITHUB_OUTPUT"
+          echo "has_dotnet=$HAS_DOTNET"             >> "$GITHUB_OUTPUT"
+          echo "has_ruby=$HAS_RUBY"                 >> "$GITHUB_OUTPUT"
+          echo "any_tests=$ANY_TESTS"               >> "$GITHUB_OUTPUT"
+
+          {
+            echo "## Lenguajes detectados"
+            echo "- Python:        $HAS_PYTHON"
+            echo "- Node/JS/TS:    $HAS_NODE"
+            echo "- Java (Maven):  $HAS_JAVA_MAVEN"
+            echo "- Java (Gradle): $HAS_JAVA_GRADLE"
+            echo "- Go:            $HAS_GO"
+            echo "- .NET:          $HAS_DOTNET"
+            echo "- Ruby:          $HAS_RUBY"
+            echo "- Tests dir:     $ANY_TESTS"
+          } > reports/${{ github.event.repository.name }}/detected-languages.txt
+
+      # ════════════════════════════════════════════════════════════
+      # 2. TESTS + COVERAGE — POR LENGUAJE (Modo Auditoría)
+      # ════════════════════════════════════════════════════════════
+
+      # ─── Python ───────────────────────────────────────────────
+      - name: Setup Python
+        if: steps.detect.outputs.has_python == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Tests Python (pytest + coverage)
+        if: steps.detect.outputs.has_python == 'true'
+        continue-on-error: true
+        id: py_tests
+        run: |
+          pip install --quiet pytest coverage pytest-cov || true
+          if [ -f "requirements.txt" ]; then
+            pip install --quiet -r requirements.txt || true
+          fi
+          if [ -f "pyproject.toml" ]; then
+            pip install --quiet -e . 2>/dev/null || true
+          fi
+
+          if find . -name "test_*.py" -o -name "*_test.py" 2>/dev/null | head -1 | grep -q . ; then
+            echo "ran=true" >> "$GITHUB_OUTPUT"
+            coverage run --source=. -m pytest --junitxml=reports/junit-python.xml 2>&1 | tee reports/pytest-output.txt || true
+            coverage xml -o reports/coverage-python.xml || true
+            coverage report > reports/coverage-python.txt || true
+          else
+            echo "ran=false" >> "$GITHUB_OUTPUT"
+            echo "No se detectaron tests Python (test_*.py o *_test.py)." > reports/pytest-output.txt
+          fi
+
+      # ─── Node / JS / TS ──────────────────────────────────────
+      - name: Setup Node.js
+        if: steps.detect.outputs.has_node == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Tests Node (npm test --coverage)
+        if: steps.detect.outputs.has_node == 'true'
+        continue-on-error: true
+        id: node_tests
+        run: |
+          # Detectar package manager
+          if [ -f "yarn.lock" ]; then PM="yarn"; elif [ -f "pnpm-lock.yaml" ]; then PM="pnpm"; else PM="npm"; fi
+
+          if [ "$PM" = "npm" ]; then
+            npm ci --no-audit --no-fund 2>&1 | tail -5 || npm install --no-audit --no-fund 2>&1 | tail -5 || true
+          elif [ "$PM" = "yarn" ]; then
+            corepack enable && yarn install --frozen-lockfile 2>&1 | tail -5 || true
+          elif [ "$PM" = "pnpm" ]; then
+            corepack enable && pnpm install --frozen-lockfile 2>&1 | tail -5 || true
+          fi
+
+          # Si tiene script "test" en package.json, intentar correrlo con --coverage
+          if grep -q '"test"' package.json; then
+            echo "ran=true" >> "$GITHUB_OUTPUT"
+            $PM test -- --coverage --coverageReporters=lcov --coverageReporters=text 2>&1 | tee reports/node-test-output.txt || true
+          else
+            echo "ran=false" >> "$GITHUB_OUTPUT"
+            echo "No se encontró script 'test' en package.json." > reports/node-test-output.txt
+          fi
+
+      # ─── Java Maven ──────────────────────────────────────────
+      - name: Setup JDK 17
+        if: steps.detect.outputs.has_java_maven == 'true' || steps.detect.outputs.has_java_gradle == 'true'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Tests Maven + JaCoCo
+        if: steps.detect.outputs.has_java_maven == 'true'
+        continue-on-error: true
+        id: mvn_tests
+        run: |
+          mvn -B -q test jacoco:report 2>&1 | tee reports/mvn-test-output.txt || true
+          if [ -f "target/site/jacoco/jacoco.xml" ]; then
+            echo "ran=true" >> "$GITHUB_OUTPUT"
+            cp target/site/jacoco/jacoco.xml reports/coverage-jacoco.xml || true
+          else
+            echo "ran=false" >> "$GITHUB_OUTPUT"
+            echo "Maven no generó reporte JaCoCo. Configurar jacoco-maven-plugin en pom.xml." >> reports/mvn-test-output.txt
+          fi
+
+      # ─── Java Gradle ─────────────────────────────────────────
+      - name: Tests Gradle + JaCoCo
+        if: steps.detect.outputs.has_java_gradle == 'true'
+        continue-on-error: true
+        id: gradle_tests
+        run: |
+          chmod +x ./gradlew 2>/dev/null || true
+          ./gradlew test jacocoTestReport --no-daemon 2>&1 | tee reports/gradle-test-output.txt || \
+            gradle test jacocoTestReport --no-daemon 2>&1 | tee reports/gradle-test-output.txt || true
+
+          REPORT_PATH=$(find . -path "*/build/reports/jacoco/*/jacocoTestReport.xml" 2>/dev/null | head -1)
+          if [ -n "$REPORT_PATH" ]; then
+            echo "ran=true" >> "$GITHUB_OUTPUT"
+            cp "$REPORT_PATH" reports/coverage-jacoco.xml || true
+          else
+            echo "ran=false" >> "$GITHUB_OUTPUT"
+            echo "Gradle no generó reporte JaCoCo. Aplicar el plugin 'jacoco' en build.gradle." >> reports/gradle-test-output.txt
+          fi
+
+      # ─── Go ──────────────────────────────────────────────────
+      - name: Setup Go
+        if: steps.detect.outputs.has_go == 'true'
+        uses: actions/setup-go@v5
+        with:
+          go-version: "stable"
+
+      - name: Tests Go (go test -coverprofile)
+        if: steps.detect.outputs.has_go == 'true'
+        continue-on-error: true
+        id: go_tests
+        run: |
+          if find . -name "*_test.go" -not -path "./vendor/*" 2>/dev/null | head -1 | grep -q . ; then
+            echo "ran=true" >> "$GITHUB_OUTPUT"
+            go test -coverprofile=reports/coverage-go.out -covermode=atomic ./... 2>&1 | tee reports/go-test-output.txt || true
+          else
+            echo "ran=false" >> "$GITHUB_OUTPUT"
+            echo "No se detectaron archivos *_test.go en el repositorio." > reports/go-test-output.txt
+          fi
+
+      # ─── .NET ────────────────────────────────────────────────
+      - name: Setup .NET
+        if: steps.detect.outputs.has_dotnet == 'true'
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Tests .NET (dotnet test + coverlet)
+        if: steps.detect.outputs.has_dotnet == 'true'
+        continue-on-error: true
+        id: dotnet_tests
+        run: |
+          if find . -maxdepth 5 -name "*Test*.csproj" -o -name "*Tests*.csproj" 2>/dev/null | head -1 | grep -q . ; then
+            echo "ran=true" >> "$GITHUB_OUTPUT"
+            dotnet test \
+              --collect:"XPlat Code Coverage" \
+              --results-directory reports/dotnet-coverage \
+              -- DataCollectionRunSettings.DataCollectors.DataCollector.Configuration.Format=opencover 2>&1 | tee reports/dotnet-test-output.txt || true
+            # Localizar el archivo opencover generado
+            OPEN_COV=$(find reports/dotnet-coverage -name "coverage.opencover.xml" 2>/dev/null | head -1)
+            [ -n "$OPEN_COV" ] && cp "$OPEN_COV" reports/coverage-dotnet.opencover.xml || true
+          else
+            echo "ran=false" >> "$GITHUB_OUTPUT"
+            echo "No se detectaron proyectos *Test*.csproj en el repositorio." > reports/dotnet-test-output.txt
+          fi
+
+      # ─── Ruby ────────────────────────────────────────────────
+      - name: Setup Ruby
+        if: steps.detect.outputs.has_ruby == 'true'
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+          bundler-cache: true
+
+      - name: Tests Ruby (rspec + simplecov)
+        if: steps.detect.outputs.has_ruby == 'true'
+        continue-on-error: true
+        id: ruby_tests
+        run: |
+          if [ -d "spec" ] || [ -d "test" ]; then
+            echo "ran=true" >> "$GITHUB_OUTPUT"
+            bundle exec rspec 2>&1 | tee reports/ruby-test-output.txt || \
+              bundle exec rake test 2>&1 | tee reports/ruby-test-output.txt || true
+          else
+            echo "ran=false" >> "$GITHUB_OUTPUT"
+            echo "No se detectaron directorios spec/ ni test/ en el repositorio." > reports/ruby-test-output.txt
+          fi
+
+      # ════════════════════════════════════════════════════════════
+      # 3. INSTALACIÓN DE sonar-scanner-cli
+      # ════════════════════════════════════════════════════════════
+      - name: Instalar sonar-scanner
+        run: |
+          SCANNER_VERSION="6.2.1.4610"
+          SCANNER_DIR="$HOME/.sonar-scanner-$SCANNER_VERSION"
+          if [ ! -d "$SCANNER_DIR" ]; then
+            curl -sSL "https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-${SCANNER_VERSION}-linux-x64.zip" -o /tmp/sonar-scanner.zip
+            unzip -q /tmp/sonar-scanner.zip -d "$HOME/"
+            mv "$HOME/sonar-scanner-${SCANNER_VERSION}-linux-x64" "$SCANNER_DIR"
+            rm -f /tmp/sonar-scanner.zip
+          fi
+          echo "$SCANNER_DIR/bin" >> "$GITHUB_PATH"
+          "$SCANNER_DIR/bin/sonar-scanner" --version || true
+
+      # ════════════════════════════════════════════════════════════
+      # 4. GENERAR sonar-project.properties (DINÁMICO)
+      # ════════════════════════════════════════════════════════════
+      - name: Generar sonar-project.properties
+        env:
+          PK: ${{ steps.key.outputs.project_key }}
+          HAS_PYTHON: ${{ steps.detect.outputs.has_python }}
+          HAS_NODE:   ${{ steps.detect.outputs.has_node }}
+          HAS_JAVA_M: ${{ steps.detect.outputs.has_java_maven }}
+          HAS_JAVA_G: ${{ steps.detect.outputs.has_java_gradle }}
+          HAS_GO:     ${{ steps.detect.outputs.has_go }}
+          HAS_NET:    ${{ steps.detect.outputs.has_dotnet }}
+          HAS_RUBY:   ${{ steps.detect.outputs.has_ruby }}
+        run: |
+          # Si el repo ya trae su propio sonar-project.properties, respetarlo
+          if [ -f "sonar-project.properties" ]; then
+            echo "Usando sonar-project.properties existente en el repo."
+            exit 0
+          fi
+
+          cat > sonar-project.properties << EOF
+          sonar.projectKey=$PK
+          sonar.projectName=${{ github.event.repository.name }}
+          sonar.projectVersion=${{ github.sha }}
+          sonar.sources=.
+          sonar.sourceEncoding=UTF-8
+          sonar.scm.provider=git
+          sonar.exclusions=**/node_modules/**,**/vendor/**,**/.venv/**,**/dist/**,**/build/**,**/target/**,**/*.min.js,**/*.min.css,**/coverage/**,**/reports/**
+          sonar.test.exclusions=**/tests/**,**/test/**,**/__tests__/**,**/spec/**,**/*.test.*,**/*.spec.*,**/*_test.go
+          EOF
+
+          # Paths de coverage por lenguaje (solo si fueron generados)
+          [ "$HAS_PYTHON"  = "true" ] && [ -f "reports/coverage-python.xml" ] && \
+            echo "sonar.python.coverage.reportPaths=reports/coverage-python.xml" >> sonar-project.properties
+
+          [ "$HAS_NODE"    = "true" ] && [ -f "coverage/lcov.info" ] && \
+            echo "sonar.javascript.lcov.reportPaths=coverage/lcov.info" >> sonar-project.properties && \
+            echo "sonar.typescript.lcov.reportPaths=coverage/lcov.info" >> sonar-project.properties
+
+          { [ "$HAS_JAVA_M" = "true" ] || [ "$HAS_JAVA_G" = "true" ]; } && [ -f "reports/coverage-jacoco.xml" ] && \
+            echo "sonar.coverage.jacoco.xmlReportPaths=reports/coverage-jacoco.xml" >> sonar-project.properties
+
+          [ "$HAS_GO"      = "true" ] && [ -f "reports/coverage-go.out" ] && \
+            echo "sonar.go.coverage.reportPaths=reports/coverage-go.out" >> sonar-project.properties
+
+          [ "$HAS_NET"     = "true" ] && [ -f "reports/coverage-dotnet.opencover.xml" ] && \
+            echo "sonar.cs.opencover.reportsPaths=reports/coverage-dotnet.opencover.xml" >> sonar-project.properties
+
+          [ "$HAS_RUBY"    = "true" ] && [ -f "coverage/.resultset.json" ] && \
+            echo "sonar.ruby.coverage.reportPaths=coverage/.resultset.json" >> sonar-project.properties
+
+          echo "=== sonar-project.properties generado ==="
+          cat sonar-project.properties
+
+      # ════════════════════════════════════════════════════════════
+      # 5. EJECUTAR sonar-scanner
+      # ════════════════════════════════════════════════════════════
+      - name: Ejecutar sonar-scanner
+        id: scan
+        continue-on-error: true
+        run: |
+          sonar-scanner \
+            -Dsonar.host.url="$SONAR_HOST_URL" \
+            -Dsonar.login="$SONAR_TOKEN" \
+            -Dsonar.qualitygate.wait=false 2>&1 | tee reports/sonar-scanner.log || true
+
+          # Extraer task ID del log para hacer polling
+          TASK_URL=$(grep -oE 'ceTaskUrl=.*' reports/sonar-scanner.log | head -1 | cut -d= -f2- || true)
+          if [ -n "$TASK_URL" ]; then
+            echo "task_url=$TASK_URL" >> "$GITHUB_OUTPUT"
+            echo "scan_ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "scan_ok=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ════════════════════════════════════════════════════════════
+      # 6. ESPERAR A QUE SONARQUBE PROCESE EL ANÁLISIS
+      # ════════════════════════════════════════════════════════════
+      - name: Esperar análisis (Compute Engine Task)
+        if: steps.scan.outputs.scan_ok == 'true'
+        continue-on-error: true
+        run: |
+          TASK_URL="${{ steps.scan.outputs.task_url }}"
+          echo "Polling: $TASK_URL"
+          for i in $(seq 1 60); do
+            STATUS=$(curl -sf -u "$SONAR_TOKEN:" "$TASK_URL" | python3 -c "import sys,json; print(json.load(sys.stdin).get('task',{}).get('status','PENDING'))" 2>/dev/null || echo "PENDING")
+            echo "[$i/60] Status: $STATUS"
+            case "$STATUS" in
+              SUCCESS|FAILED|CANCELED) break ;;
+            esac
+            sleep 5
+          done
+
+      # ════════════════════════════════════════════════════════════
+      # 7. OBTENER RESULTADOS VIA API
+      # ════════════════════════════════════════════════════════════
+      - name: Pull de issues, hotspots y métricas
+        if: always()
+        continue-on-error: true
+        env:
+          PK: ${{ steps.key.outputs.project_key }}
+        run: |
+          API="$SONAR_HOST_URL/api"
+
+          # Métricas principales
+          METRICS="bugs,vulnerabilities,code_smells,security_hotspots,coverage,duplicated_lines_density,ncloc,sqale_index,reliability_rating,security_rating,sqale_rating,alert_status"
+          curl -sf -u "$SONAR_TOKEN:" \
+            "$API/measures/component?component=$PK&metricKeys=$METRICS" \
+            -o reports/sonar-measures.json || echo '{}' > reports/sonar-measures.json
+
+          # Issues (bugs + vulnerabilities + code smells)
+          curl -sf -u "$SONAR_TOKEN:" \
+            "$API/issues/search?componentKeys=$PK&types=BUG,VULNERABILITY,CODE_SMELL&ps=500&s=SEVERITY&asc=false" \
+            -o reports/sonar-issues.json || echo '{"issues":[]}' > reports/sonar-issues.json
+
+          # Security hotspots
+          curl -sf -u "$SONAR_TOKEN:" \
+            "$API/hotspots/search?projectKey=$PK&ps=500" \
+            -o reports/sonar-hotspots.json || echo '{"hotspots":[]}' > reports/sonar-hotspots.json
+
+          # Quality gate
+          curl -sf -u "$SONAR_TOKEN:" \
+            "$API/qualitygates/project_status?projectKey=$PK" \
+            -o reports/sonar-qg.json || echo '{}' > reports/sonar-qg.json
+
+          echo "=== API responses ==="
+          ls -la reports/sonar-*.json
+
+      # ════════════════════════════════════════════════════════════
+      # 8. GENERAR REPORTE HTML (Paleta Dark Cyber / Neon Aguamarina)
+      # ════════════════════════════════════════════════════════════
+      - name: Generar reporte HTML
+        if: always()
+        env:
+          REPO_NAME: ${{ github.event.repository.name }}
+          REPO_FULL: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          REF: ${{ github.ref_name }}
+          PK: ${{ steps.key.outputs.project_key }}
+          SONAR_HOST_URL: ${{ inputs.sonar-host-url }}
+          SCAN_OK: ${{ steps.scan.outputs.scan_ok }}
+          ANY_TESTS: ${{ steps.detect.outputs.any_tests }}
+          HAS_PYTHON: ${{ steps.detect.outputs.has_python }}
+          HAS_NODE:   ${{ steps.detect.outputs.has_node }}
+          HAS_JAVA_M: ${{ steps.detect.outputs.has_java_maven }}
+          HAS_JAVA_G: ${{ steps.detect.outputs.has_java_gradle }}
+          HAS_GO:     ${{ steps.detect.outputs.has_go }}
+          HAS_NET:    ${{ steps.detect.outputs.has_dotnet }}
+          HAS_RUBY:   ${{ steps.detect.outputs.has_ruby }}
+          THRESHOLD:  ${{ inputs.coverage-threshold }}
+          PYTHON_SCRIPT: |
+            import os, json, html, base64
+            from datetime import datetime
+
+            repo_name = os.environ["REPO_NAME"]
+            repo_full = os.environ["REPO_FULL"]
+            sha       = os.environ["SHA"][:7]
+            ref       = os.environ["REF"]
+            pk        = os.environ["PK"]
+            host      = os.environ["SONAR_HOST_URL"]
+            scan_ok   = os.environ.get("SCAN_OK","false") == "true"
+            any_tests = os.environ.get("ANY_TESTS","false") == "true"
+            threshold = float(os.environ.get("THRESHOLD","80"))
+            fecha     = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+            out_dir   = f"reports/{repo_name}"
+
+            langs_detected = [
+                ("Python",         os.environ.get("HAS_PYTHON","false")    == "true"),
+                ("Node.js/TS",     os.environ.get("HAS_NODE","false")      == "true"),
+                ("Java (Maven)",   os.environ.get("HAS_JAVA_M","false")    == "true"),
+                ("Java (Gradle)",  os.environ.get("HAS_JAVA_G","false")    == "true"),
+                ("Go",             os.environ.get("HAS_GO","false")        == "true"),
+                (".NET",           os.environ.get("HAS_NET","false")       == "true"),
+                ("Ruby",           os.environ.get("HAS_RUBY","false")      == "true"),
+            ]
+            active_langs = [n for n,v in langs_detected if v]
+
+            def safe_load(path, default):
+                if os.path.exists(path):
+                    try:
+                        return json.load(open(path, encoding="utf-8"))
+                    except Exception:
+                        return default
+                return default
+
+            measures_raw = safe_load("reports/sonar-measures.json", {})
+            issues_raw   = safe_load("reports/sonar-issues.json", {"issues": []})
+            hotspots_raw = safe_load("reports/sonar-hotspots.json", {"hotspots": []})
+            qg_raw       = safe_load("reports/sonar-qg.json", {})
+
+            measures = {}
+            for m in measures_raw.get("component", {}).get("measures", []):
+                measures[m["metric"]] = m.get("value", "0")
+
+            bugs       = int(float(measures.get("bugs", 0)))
+            vulns      = int(float(measures.get("vulnerabilities", 0)))
+            smells     = int(float(measures.get("code_smells", 0)))
+            hotspots_n = int(float(measures.get("security_hotspots", 0)))
+            coverage   = float(measures.get("coverage", 0))
+            dup        = float(measures.get("duplicated_lines_density", 0))
+            ncloc      = int(float(measures.get("ncloc", 0)))
+            debt_min   = int(float(measures.get("sqale_index", 0)))
+
+            qg_status  = qg_raw.get("projectStatus", {}).get("status", "NONE")
+
+            # Logo
+            logo_h = '<h2 style="color:#00F1C7;margin:0;">Simon</h2>'
+            try:
+                if os.path.exists("image/logo_claro.png"):
+                    with open("image/logo_claro.png","rb") as lf:
+                        logo_h = f'<img src="data:image/png;base64,{base64.b64encode(lf.read()).decode()}" alt="Simon" height="45">'
+            except Exception:
+                pass
+
+            # Decisión del badge principal
+            if not scan_ok:
+                main_badge = ("error",   "Análisis no completado — revisar logs")
+            elif not any_tests:
+                main_badge = ("warn",    "Análisis ejecutado — sin tests detectados")
+            elif qg_status == "OK":
+                main_badge = ("success", "Quality Gate OK")
+            elif qg_status == "ERROR":
+                main_badge = ("error",   "Quality Gate FAILED")
+            else:
+                main_badge = ("info",    f"Quality Gate: {qg_status}")
+
+            badge_css = {
+                "success": ("#26C130","rgba(38,193,48,0.15)","#26C130"),
+                "warn":    ("#FAD900","rgba(250,217,0,0.15)","#FAD900"),
+                "error":   ("#E31952","rgba(227,25,82,0.15)","#E31952"),
+                "info":    ("#1e90ff","rgba(30,144,255,0.15)","#1e90ff"),
+            }
+            mc, mb, mbd = badge_css[main_badge[0]]
+
+            # Bloque "sin tests" estilo sec-hooks.yml
+            sin_tests_block = ""
+            if not any_tests:
+                ejemplos = []
+                if os.environ.get("HAS_PYTHON")     == "true":
+                    ejemplos.append(("Python (pytest + coverage)",
+                                     "# tests/test_app.py\nimport pytest\nfrom app import suma\n\n"
+                                     "def test_suma():\n    assert suma(2, 3) == 5\n\n"
+                                     "# Ejecutar localmente:\n"
+                                     "#   pip install pytest coverage\n"
+                                     "#   coverage run -m pytest && coverage xml -o coverage.xml"))
+                if os.environ.get("HAS_NODE")       == "true":
+                    ejemplos.append(("Node.js (Jest)",
+                                     '// package.json\n{\n  "scripts": {\n    "test": "jest --coverage"\n  },\n  '
+                                     '"jest": {\n    "coverageReporters": ["lcov", "text"]\n  }\n}'))
+                if os.environ.get("HAS_JAVA_M")     == "true":
+                    ejemplos.append(("Java Maven (JaCoCo)",
+                                     "<!-- pom.xml -->\n<plugin>\n  <groupId>org.jacoco</groupId>\n  "
+                                     "<artifactId>jacoco-maven-plugin</artifactId>\n  <version>0.8.11</version>\n  "
+                                     "<executions>\n    <execution><goals><goal>prepare-agent</goal></goals></execution>\n    "
+                                     "<execution><id>report</id><phase>test</phase><goals><goal>report</goal></goals></execution>\n  "
+                                     "</executions>\n</plugin>"))
+                if os.environ.get("HAS_JAVA_G")     == "true":
+                    ejemplos.append(("Java Gradle (JaCoCo)",
+                                     "// build.gradle\nplugins { id 'jacoco' }\n"
+                                     "test { finalizedBy jacocoTestReport }\n"
+                                     "jacocoTestReport { dependsOn test; reports { xml.required = true } }"))
+                if os.environ.get("HAS_GO")         == "true":
+                    ejemplos.append(("Go (testing nativo)",
+                                     "// app_test.go\npackage main\nimport \"testing\"\n\n"
+                                     "func TestSuma(t *testing.T) {\n  if Suma(2,3) != 5 { t.Fail() }\n}\n\n"
+                                     "// Ejecutar: go test -coverprofile=coverage.out ./..."))
+                if os.environ.get("HAS_NET")        == "true":
+                    ejemplos.append((".NET (xUnit + Coverlet)",
+                                     "<!-- MyApp.Tests.csproj -->\n<PackageReference Include=\"xunit\" Version=\"2.9.0\" />\n"
+                                     "<PackageReference Include=\"coverlet.collector\" Version=\"6.0.2\" />\n\n"
+                                     "// Ejecutar: dotnet test --collect:\"XPlat Code Coverage\""))
+                if os.environ.get("HAS_RUBY")       == "true":
+                    ejemplos.append(("Ruby (RSpec + SimpleCov)",
+                                     "# spec/spec_helper.rb\nrequire 'simplecov'\nSimpleCov.start\n\n"
+                                     "# Gemfile\ngem 'rspec'\ngem 'simplecov', require: false"))
+
+                ejemplos_html = ""
+                for titulo, ejemplo in ejemplos:
+                    ejemplos_html += (
+                        f'<details style="margin-top:12px;background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:12px">'
+                        f'<summary style="color:#00F1C7;font-weight:600;cursor:pointer">{html.escape(titulo)}</summary>'
+                        f'<pre style="margin-top:10px;padding:14px;background:#000;border-radius:6px;color:#D1D1D1;font-size:12px;overflow-x:auto;font-family:Courier New,monospace">{html.escape(ejemplo)}</pre>'
+                        f'</details>'
+                    )
+
+                sin_tests_block = f"""
+                <div class="info-box" style="margin-bottom:24px">
+                  <strong>⚠️ Acción recomendada:</strong> El análisis se ejecutó pero <b>no se detectaron pruebas unitarias</b> en el repositorio.
+                  Sin tests, el coverage queda en 0% y SonarQube no puede calcular calidad de testing.
+                  El umbral configurado por el equipo de Cybersecurity es <b>{int(threshold)}%</b>.
+                  <br><br>
+                  Para activar el coverage, agrega un framework de tests al lenguaje detectado:
+                  {ejemplos_html if ejemplos_html else '<em>(no se detectó un lenguaje soportado)</em>'}
+                </div>
+                """
+
+            # Resumen de issues por severidad
+            sev_counts = {"BLOCKER":0,"CRITICAL":0,"MAJOR":0,"MINOR":0,"INFO":0}
+            type_counts = {"BUG":0,"VULNERABILITY":0,"CODE_SMELL":0}
+            for it in issues_raw.get("issues", []):
+                sev_counts[it.get("severity","INFO")] = sev_counts.get(it.get("severity","INFO"),0) + 1
+                type_counts[it.get("type","CODE_SMELL")] = type_counts.get(it.get("type","CODE_SMELL"),0) + 1
+
+            # Tabla de issues (top 100)
+            rows = ""
+            for it in issues_raw.get("issues", [])[:100]:
+                sev = it.get("severity","INFO")
+                typ = it.get("type","CODE_SMELL")
+                msg = html.escape(str(it.get("message","")))
+                comp = html.escape(str(it.get("component","")).split(":")[-1])
+                line = it.get("line","")
+                sev_color = {"BLOCKER":"#E31952","CRITICAL":"#E31952","MAJOR":"#FE7C43","MINOR":"#FAD900","INFO":"#888888"}.get(sev,"#888888")
+                typ_color = {"BUG":"#E31952","VULNERABILITY":"#FE7C43","CODE_SMELL":"#1e90ff"}.get(typ,"#888888")
+                rows += (f'<tr>'
+                         f'<td><span class="badge-sev" style="color:{sev_color};border-color:{sev_color}">{sev}</span></td>'
+                         f'<td><span class="badge-sev" style="color:{typ_color};border-color:{typ_color}">{typ.replace("_"," ")}</span></td>'
+                         f'<td>{comp}{":" + str(line) if line else ""}</td>'
+                         f'<td>{msg}</td>'
+                         f'</tr>')
+
+            # Tabla de hotspots
+            hot_rows = ""
+            for h in hotspots_raw.get("hotspots", [])[:50]:
+                vuln_prob = h.get("vulnerabilityProbability","LOW")
+                msg = html.escape(str(h.get("message","")))
+                comp = html.escape(str(h.get("component","")).split(":")[-1])
+                line = h.get("line","")
+                cat = html.escape(str(h.get("securityCategory","")))
+                prob_color = {"HIGH":"#E31952","MEDIUM":"#FE7C43","LOW":"#FAD900"}.get(vuln_prob,"#888888")
+                hot_rows += (f'<tr>'
+                             f'<td><span class="badge-sev" style="color:{prob_color};border-color:{prob_color}">{vuln_prob}</span></td>'
+                             f'<td>{cat}</td>'
+                             f'<td>{comp}{":" + str(line) if line else ""}</td>'
+                             f'<td>{msg}</td>'
+                             f'</tr>')
+
+            # Coverage color
+            cov_color = "#26C130" if coverage >= threshold else ("#FAD900" if coverage >= threshold * 0.6 else "#E31952")
+            dup_color = "#26C130" if dup < 3 else ("#FAD900" if dup < 10 else "#E31952")
+
+            report = f"""<!DOCTYPE html>
+            <html lang="es">
+            <head>
+              <meta charset="UTF-8">
+              <title>SonarQube Report — {repo_name}</title>
+              <style>
+                *{{box-sizing:border-box;margin:0;padding:0}}
+                body{{font-family:'Segoe UI',system-ui,sans-serif;background:#1A1A1A;color:#E7E7E7}}
+                .header{{background:#000000;border-bottom:2px solid #00F1C7;padding:30px 40px;position:relative}}
+                .logo-container{{margin-bottom:15px}}
+                .tool-badge{{background:rgba(0,241,199,0.1);border:1px solid #00F1C7;color:#00F1C7;padding:6px 16px;border-radius:20px;font-size:13px;font-weight:700}}
+                .header h1{{font-size:26px;font-weight:700;color:#FFFFFF;margin-top:16px}}
+                .meta{{color:#B0B0B0;font-size:13px;margin-top:10px}}
+                .meta span{{margin-right:20px}}
+                .btn-pdf{{position:absolute;top:40px;right:40px;background:#00F1C7;color:#000000;font-weight:bold;padding:10px 20px;border:none;border-radius:6px;cursor:pointer;font-size:14px}}
+                .btn-pdf:hover{{background:#00c4a0}}
+                .container{{max-width:1200px;margin:0 auto;padding:30px}}
+                .status-badge{{display:inline-block;padding:10px 24px;border-radius:8px;font-size:15px;font-weight:700;border:1px solid {mbd};background:{mb};color:{mc};margin-bottom:24px}}
+                .section{{margin-bottom:30px}}
+                .section-title{{font-size:16px;font-weight:600;color:#00F1C7;margin-bottom:14px;padding-bottom:8px;border-bottom:1px solid #373737}}
+                .grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:14px}}
+                .card{{background:#000000;border:1px solid #373737;border-radius:8px;padding:20px;text-align:center}}
+                .card-label{{font-size:12px;color:#888888;text-transform:uppercase;letter-spacing:1px;margin-bottom:10px}}
+                .card-value{{font-size:30px;font-weight:800;font-family:'Courier New',monospace}}
+                .card-suffix{{font-size:14px;color:#888888;margin-left:4px}}
+                .info-box{{background:rgba(250,217,0,0.08);border:1px solid #FAD900;border-radius:8px;padding:16px 20px;font-size:13px;color:#FAD900}}
+                .info-box code{{background:#373737;padding:2px 6px;border-radius:4px;font-size:12px;color:#E7E7E7}}
+                table{{width:100%;border-collapse:collapse;background:#000;border:1px solid #373737;border-radius:8px;overflow:hidden}}
+                th{{text-align:left;padding:12px;background:#0d1117;color:#00F1C7;border-bottom:1px solid #30363d;font-size:12px;text-transform:uppercase;letter-spacing:0.5px}}
+                td{{padding:10px 12px;border-bottom:1px solid #21262d;font-size:13px;color:#D1D1D1}}
+                tr:hover td{{background:#161b22}}
+                .badge-sev{{display:inline-block;padding:3px 10px;border-radius:4px;font-size:11px;font-weight:700;border:1px solid;background:transparent}}
+                .langs{{display:flex;flex-wrap:wrap;gap:8px}}
+                .lang-chip{{background:rgba(0,241,199,0.08);border:1px solid #00F1C7;color:#00F1C7;padding:5px 12px;border-radius:14px;font-size:12px;font-weight:600}}
+                .footer{{text-align:center;padding:30px;color:#888888;font-size:12px;border-top:1px solid #373737;margin-top:20px}}
+                @media print{{body{{background:#FFF !important;color:#000 !important}}.header{{background:#FFF !important}}.header h1{{color:#000 !important}}.btn-pdf{{display:none !important}}.card,table,.info-box{{background:#FFF !important;border:1px solid #ccc !important}}td,th{{color:#000 !important}}}}
+              </style>
+            </head>
+            <body>
+              <div class="header">
+                <button class="btn-pdf" onclick="window.print()">📥 Descargar PDF</button>
+                <div class="logo-container">{logo_h}</div>
+                <span class="tool-badge">SONARQUBE — SAST + COVERAGE</span>
+                <h1>SonarQube Analysis Report</h1>
+                <div class="meta">
+                  <span>📦 {html.escape(repo_full)}</span>
+                  <span>🌿 {html.escape(ref)}</span>
+                  <span>🔖 {sha}</span>
+                  <span>🕐 {fecha}</span>
+                </div>
+              </div>
+
+              <div class="container">
+                <span class="status-badge">{main_badge[1]}</span>
+
+                {sin_tests_block}
+
+                <div class="section">
+                  <div class="section-title">Lenguajes detectados</div>
+                  <div class="langs">
+                    {''.join(f'<span class="lang-chip">{html.escape(l)}</span>' for l in active_langs) or '<em style="color:#888">(ninguno)</em>'}
+                  </div>
+                </div>
+
+                <div class="section">
+                  <div class="section-title">Métricas principales</div>
+                  <div class="grid">
+                    <div class="card"><div class="card-label">Bugs</div><div class="card-value" style="color:{'#26C130' if bugs == 0 else '#E31952'}">{bugs}</div></div>
+                    <div class="card"><div class="card-label">Vulnerabilidades</div><div class="card-value" style="color:{'#26C130' if vulns == 0 else '#E31952'}">{vulns}</div></div>
+                    <div class="card"><div class="card-label">Code Smells</div><div class="card-value" style="color:{'#26C130' if smells == 0 else '#FE7C43'}">{smells}</div></div>
+                    <div class="card"><div class="card-label">Security Hotspots</div><div class="card-value" style="color:{'#26C130' if hotspots_n == 0 else '#FE7C43'}">{hotspots_n}</div></div>
+                    <div class="card"><div class="card-label">Coverage</div><div class="card-value" style="color:{cov_color}">{coverage:.1f}<span class="card-suffix">%</span></div></div>
+                    <div class="card"><div class="card-label">Duplicación</div><div class="card-value" style="color:{dup_color}">{dup:.1f}<span class="card-suffix">%</span></div></div>
+                    <div class="card"><div class="card-label">Líneas de código</div><div class="card-value" style="color:#E7E7E7">{ncloc:,}</div></div>
+                    <div class="card"><div class="card-label">Deuda técnica</div><div class="card-value" style="color:#E7E7E7">{debt_min}<span class="card-suffix">min</span></div></div>
+                  </div>
+                </div>
+
+                <div class="section">
+                  <div class="section-title">Distribución por severidad ({sum(sev_counts.values())} issues)</div>
+                  <div class="grid">
+                    {''.join(f'<div class="card"><div class="card-label">{k}</div><div class="card-value" style="color:{"#E31952" if k in ("BLOCKER","CRITICAL") and v>0 else "#FE7C43" if k=="MAJOR" and v>0 else "#FAD900" if k=="MINOR" and v>0 else "#888"}">{v}</div></div>' for k,v in sev_counts.items())}
+                  </div>
+                </div>
+
+                {f'<div class="section"><div class="section-title">Issues (top {min(100, len(issues_raw.get("issues",[])))} de {len(issues_raw.get("issues",[]))})</div><table><tr><th>Severidad</th><th>Tipo</th><th>Archivo:Línea</th><th>Mensaje</th></tr>{rows}</table></div>' if rows else '<div class="section"><div class="section-title">Issues</div><div class="info-box" style="background:rgba(38,193,48,0.08);border-color:#26C130;color:#26C130">✅ Sin issues detectados</div></div>'}
+
+                {f'<div class="section"><div class="section-title">Security Hotspots ({len(hotspots_raw.get("hotspots",[]))})</div><table><tr><th>Prob.</th><th>Categoría</th><th>Archivo:Línea</th><th>Descripción</th></tr>{hot_rows}</table></div>' if hot_rows else ''}
+
+                <div class="section">
+                  <div class="section-title">Conexión SonarQube</div>
+                  <table>
+                    <tr><th style="width:200px">Campo</th><th>Valor</th></tr>
+                    <tr><td>Servidor</td><td><code>{html.escape(host)}</code></td></tr>
+                    <tr><td>Project Key</td><td><code>{html.escape(pk)}</code></td></tr>
+                    <tr><td>Quality Gate</td><td><code>{html.escape(qg_status)}</code></td></tr>
+                    <tr><td>Dashboard</td><td><a href="{html.escape(host)}/dashboard?id={html.escape(pk)}" style="color:#00F1C7">{html.escape(host)}/dashboard?id={html.escape(pk)}</a></td></tr>
+                  </table>
+                </div>
+              </div>
+
+              <div class="footer">Generado por <strong>pipelines-centrales</strong> · Equipo Cybersecurity · Simon · {fecha}</div>
+            </body>
+            </html>"""
+
+            out_path = os.path.join(out_dir, "sonarqube-report.html")
+            with open(out_path, "w", encoding="utf-8") as fh:
+                fh.write(report)
+            print(f"[SonarQube] reporte generado: {out_path}")
+        run: python3 -c "$PYTHON_SCRIPT"
+
+      - name: Subir reporte
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-sonarqube-report
+          path: reports/${{ github.event.repository.name }}/
+          retention-days: 30
+          if-no-files-found: warn
