@@ -173,29 +173,100 @@ jobs:
         with:
           node-version: "20"
 
-      - name: Tests Node (npm test --coverage)
+      - name: Tests Node (pnpm test --coverage)
         if: steps.detect.outputs.has_node == 'true'
         continue-on-error: true
         id: node_tests
+        env:
+          CI: "true"            # react-scripts / jest / vitest → non-interactive
+          FORCE_COLOR: "0"
         run: |
-          # Detectar package manager
-          if [ -f "yarn.lock" ]; then PM="yarn"; elif [ -f "pnpm-lock.yaml" ]; then PM="pnpm"; else PM="npm"; fi
+          set +e   # Modo auditoría: no abortar el step
+          mkdir -p reports
 
-          if [ "$PM" = "npm" ]; then
-            npm ci --no-audit --no-fund 2>&1 | tail -5 || npm install --no-audit --no-fund 2>&1 | tail -5 || true
-          elif [ "$PM" = "yarn" ]; then
-            corepack enable && yarn install --frozen-lockfile 2>&1 | tail -5 || true
-          elif [ "$PM" = "pnpm" ]; then
-            corepack enable && pnpm install --frozen-lockfile 2>&1 | tail -5 || true
-          fi
+          # ── Activar pnpm vía corepack (gestor único para todo el workflow) ─
+          corepack enable 2>/dev/null || npm install -g pnpm@latest >/dev/null 2>&1
+          corepack prepare pnpm@latest --activate 2>/dev/null || true
 
-          # Si tiene script "test" en package.json, intentar correrlo con --coverage
-          if grep -q '"test"' package.json; then
-            echo "ran=true" >> "$GITHUB_OUTPUT"
-            $PM test -- --coverage --coverageReporters=lcov --coverageReporters=text 2>&1 | tee reports/node-test-output.txt || true
+          echo "Node:  $(node --version)"
+          echo "pnpm:  $(pnpm --version 2>/dev/null || echo 'no instalado')"
+
+          # ── Instalar dependencias con pnpm ─────────────────────
+          # pnpm install acepta:
+          #   - pnpm-lock.yaml (nativo, ideal)
+          #   - package-lock.json (genera pnpm-lock.yaml)
+          #   - yarn.lock        (genera pnpm-lock.yaml)
+          #   - sin lockfile     (resuelve desde package.json)
+          INSTALL_LOG="reports/node-install.log"
+          if [ -f "pnpm-lock.yaml" ]; then
+            pnpm install --frozen-lockfile > "$INSTALL_LOG" 2>&1
+            if [ $? -ne 0 ]; then
+              echo "pnpm install --frozen-lockfile falló, reintentando sin lockfile estricto..."
+              pnpm install --no-frozen-lockfile >> "$INSTALL_LOG" 2>&1
+            fi
           else
+            # Sin pnpm-lock.yaml: instalar permitiendo resolver desde package-lock/yarn.lock o package.json
+            pnpm install --no-frozen-lockfile > "$INSTALL_LOG" 2>&1
+          fi
+          INSTALL_EXIT=$?
+          echo "── Resumen instalación pnpm (exit=$INSTALL_EXIT) ──"
+          tail -20 "$INSTALL_LOG" || true
+
+          # ── Verificar script "test" con node parser (no grep frágil) ─
+          HAS_TEST=$(node -e "try{const p=require('./package.json');process.exit(p.scripts&&p.scripts.test?0:1)}catch(e){process.exit(1)}" && echo true || echo false)
+          if [ "$HAS_TEST" != "true" ]; then
             echo "ran=false" >> "$GITHUB_OUTPUT"
             echo "No se encontró script 'test' en package.json." > reports/node-test-output.txt
+            exit 0
+          fi
+
+          # ── Detectar framework de tests ─────────────────────────
+          FRAMEWORK="unknown"
+          if   node -e "const p=require('./package.json');const d={...p.dependencies,...p.devDependencies};process.exit(d&&d['react-scripts']?0:1)" 2>/dev/null; then
+            FRAMEWORK="cra"
+          elif node -e "const p=require('./package.json');const d={...p.dependencies,...p.devDependencies};process.exit(d&&d['vitest']?0:1)" 2>/dev/null; then
+            FRAMEWORK="vitest"
+          elif node -e "const p=require('./package.json');const d={...p.dependencies,...p.devDependencies};process.exit(d&&d['jest']?0:1)" 2>/dev/null; then
+            FRAMEWORK="jest"
+          elif node -e "const p=require('./package.json');const d={...p.dependencies,...p.devDependencies};process.exit(d&&d['mocha']?0:1)" 2>/dev/null; then
+            FRAMEWORK="mocha"
+          fi
+          echo "Framework detectado: $FRAMEWORK"
+
+          # ── Ejecutar tests con coverage según framework ─────────
+          # pnpm requiere doble dash para pasar args al script subyacente
+          echo "ran=true" >> "$GITHUB_OUTPUT"
+          case "$FRAMEWORK" in
+            cra|jest)
+              pnpm test -- --coverage --watchAll=false --coverageReporters=lcov --coverageReporters=text-summary 2>&1 | tee reports/node-test-output.txt
+              ;;
+            vitest)
+              pnpm test -- --coverage --coverage.reporter=lcov --coverage.reporter=text 2>&1 | tee reports/node-test-output.txt
+              ;;
+            *)
+              pnpm test -- --coverage --watchAll=false 2>&1 | tee reports/node-test-output.txt
+              if [ ${PIPESTATUS[0]} -ne 0 ]; then
+                echo "── Reintentando sin --watchAll=false ──" | tee -a reports/node-test-output.txt
+                pnpm test -- --coverage 2>&1 | tee -a reports/node-test-output.txt
+              fi
+              ;;
+          esac
+
+          # ── Verificar coverage generado ─────────────────────────
+          if [ -f "coverage/lcov.info" ]; then
+            echo "✅ Coverage generado: coverage/lcov.info ($(wc -l < coverage/lcov.info) líneas)"
+          else
+            echo "⚠️  No se encontró coverage/lcov.info — buscando alternativas..."
+            FOUND_LCOV=$(find . -name "lcov.info" -not -path "./node_modules/*" 2>/dev/null | head -1)
+            if [ -n "$FOUND_LCOV" ]; then
+              echo "Encontrado en: $FOUND_LCOV → copiando a coverage/lcov.info"
+              mkdir -p coverage && cp "$FOUND_LCOV" coverage/lcov.info
+            else
+              echo "Coverage no se generó. Posibles causas:"
+              echo "  - El proyecto no tiene tests (.test.js, .spec.ts, etc.)"
+              echo "  - Falta el reporter 'lcov' en la config del runner"
+              echo "  - Para Vitest: instalar '@vitest/coverage-v8' o '@vitest/coverage-istanbul'"
+            fi
           fi
 
       # ─── Java Maven ──────────────────────────────────────────
