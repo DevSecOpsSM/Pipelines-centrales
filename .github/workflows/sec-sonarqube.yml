@@ -167,59 +167,83 @@ jobs:
           fi
 
       # ─── Node / JS / TS ──────────────────────────────────────
-      # IMPORTANTE: usamos pnpm/action-setup en lugar de corepack porque corepack
-      # tiene un bug conocido en runners self-hosted con cache corrupto que produce
-      # ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING. La acción oficial de pnpm instala
-      # el binario directamente, evitando completamente el shim de corepack.
+      # PNPM: instalamos el binario standalone descargado de GitHub Releases.
+      # Por qué NO usar otras opciones:
+      #   - corepack:           cache corrupto en runners self-hosted (ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING)
+      #   - pnpm/action-setup:  exige decidir entre `version:` y `packageManager` y peleamos con ambos
+      #   - npm install -g pnpm: requiere permisos globales y pnpm chequea packageManager de todos modos
       #
-      # Patrón de doble step: pnpm/action-setup@v4 se NIEGA a aceptar 'version:' si
-      # el repo cliente ya declara "packageManager" en package.json (error
-      # "Multiple versions of pnpm specified"). Por eso detectamos primero y
-      # ramificamos: si el repo declara packageManager, lo respetamos; si no, fallback.
-
-      - name: Detectar packageManager en package.json
-        if: steps.detect.outputs.has_node == 'true'
-        id: detect_pm
-        run: |
-          # IMPORTANTE: usar grep (no node) porque este step se ejecuta ANTES
-          # de actions/setup-node, y el self-hosted runner puede no tener node
-          # en el PATH a este punto. Si usáramos `node -e`, el comando fallaría
-          # silenciosamente (2>/dev/null) y caería al else aunque el repo SÍ
-          # declare packageManager → conflicto con pnpm/action-setup.
-          if [ ! -f "package.json" ]; then
-            echo "package.json no encontrado en la raíz"
-            echo "has_pm_field=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          if grep -qE '"packageManager"[[:space:]]*:' package.json; then
-            PM_DECL=$(grep -oE '"packageManager"[[:space:]]*:[[:space:]]*"[^"]*"' package.json | head -1 | sed 's/.*:[[:space:]]*"\([^"]*\)".*/\1/')
-            echo "Repo declara packageManager: $PM_DECL — respetando esa versión"
-            echo "has_pm_field=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "Repo NO declara packageManager → fallback a pnpm v9"
-            echo "has_pm_field=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Setup pnpm (desde packageManager del repo)
-        if: steps.detect.outputs.has_node == 'true' && steps.detect_pm.outputs.has_pm_field == 'true'
-        uses: pnpm/action-setup@v4
-        with:
-          run_install: false
-
-      - name: Setup pnpm (fallback v9)
-        if: steps.detect.outputs.has_node == 'true' && steps.detect_pm.outputs.has_pm_field == 'false'
-        uses: pnpm/action-setup@v4
-        with:
-          version: 9
-          run_install: false
+      # El binario standalone es self-contained, idéntico al que entrega corepack,
+      # y al pinear a la MISMA versión que `packageManager` evitamos el ERR_PNPM_BAD_PM_VERSION.
 
       - name: Setup Node.js
         if: steps.detect.outputs.has_node == 'true'
         uses: actions/setup-node@v4
         with:
           node-version: "20"
-          # NO usar cache: 'pnpm' aquí — falla si el repo no tiene pnpm-lock.yaml
-          # y nuestro workflow debe ser universal (acepta cualquier lockfile)
+          # NO usar cache: 'pnpm' — falla en repos sin pnpm-lock.yaml
+
+      - name: Setup pnpm (binario standalone desde GitHub Releases)
+        if: steps.detect.outputs.has_node == 'true'
+        id: setup_pnpm
+        run: |
+          set +e
+          mkdir -p reports
+
+          # ── Debug: mostrar el inicio del package.json para diagnóstico ──
+          if [ -f "package.json" ]; then
+            echo "── Primeras 25 líneas de package.json ──"
+            head -25 package.json
+            echo "── Fin ──"
+          else
+            echo "❌ No existe package.json en la raíz."
+          fi
+
+          # ── Detectar la versión deseada de pnpm desde packageManager ───
+          # Usamos grep plano (sin clases POSIX que pueden fallar en algunas
+          # implementaciones de grep) y sed para extraer la versión.
+          PM_VER=""
+          if [ -f "package.json" ]; then
+            # Match liberal: cualquier línea con "packageManager" y "pnpm@X.Y.Z"
+            LINE=$(grep packageManager package.json | grep pnpm | head -1 || true)
+            if [ -n "$LINE" ]; then
+              PM_VER=$(echo "$LINE" | sed -E 's/.*pnpm@([0-9]+\.[0-9]+\.[0-9]+[^"]*).*/\1/')
+              echo "✅ Versión detectada desde packageManager: pnpm@$PM_VER"
+            fi
+          fi
+
+          # Fallback si no se detectó
+          if [ -z "$PM_VER" ]; then
+            PM_VER="9.15.1"
+            echo "⚠️ packageManager no detectado → usando pnpm@$PM_VER por defecto"
+          fi
+
+          # ── Detectar arquitectura ──────────────────────────────────────
+          case "$(uname -m)" in
+            x86_64)        ARCH="x64" ;;
+            aarch64|arm64) ARCH="arm64" ;;
+            *)             ARCH="x64" ;;
+          esac
+          echo "Arquitectura: linux-$ARCH"
+
+          # ── Descargar binario directamente ─────────────────────────────
+          PNPM_DIR="$HOME/.local/bin"
+          mkdir -p "$PNPM_DIR"
+          URL="https://github.com/pnpm/pnpm/releases/download/v${PM_VER}/pnpm-linux-${ARCH}"
+          echo "Descargando: $URL"
+          curl -fsSL "$URL" -o "$PNPM_DIR/pnpm"
+          if [ $? -ne 0 ] || [ ! -s "$PNPM_DIR/pnpm" ]; then
+            echo "❌ Falló la descarga del binario de pnpm v${PM_VER}"
+            exit 1
+          fi
+          chmod +x "$PNPM_DIR/pnpm"
+
+          # Exportar al PATH del workflow
+          echo "$PNPM_DIR" >> "$GITHUB_PATH"
+
+          # Verificar
+          "$PNPM_DIR/pnpm" --version
+          echo "version=$PM_VER" >> "$GITHUB_OUTPUT"
 
       - name: Tests Node (pnpm test --coverage)
         if: steps.detect.outputs.has_node == 'true'
