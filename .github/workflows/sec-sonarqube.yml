@@ -183,7 +183,7 @@ jobs:
           node-version: "20"
           # NO usar cache: 'pnpm' — falla en repos sin pnpm-lock.yaml
 
-      - name: Setup pnpm (binario standalone desde GitHub Releases)
+      - name: Setup pnpm (vía npm install local, sin corepack)
         if: steps.detect.outputs.has_node == 'true'
         id: setup_pnpm
         run: |
@@ -192,57 +192,63 @@ jobs:
 
           # ── Debug: mostrar el inicio del package.json para diagnóstico ──
           if [ -f "package.json" ]; then
-            echo "── Primeras 25 líneas de package.json ──"
+            echo "── Primeras 25 líneas de package.json del repo cliente ──"
             head -25 package.json
             echo "── Fin ──"
-          else
-            echo "❌ No existe package.json en la raíz."
           fi
 
-          # ── Detectar la versión deseada de pnpm desde packageManager ───
-          # Usamos grep plano (sin clases POSIX que pueden fallar en algunas
-          # implementaciones de grep) y sed para extraer la versión.
+          # ── Detectar versión de pnpm desde packageManager ──────────────
           PM_VER=""
           if [ -f "package.json" ]; then
-            # Match liberal: cualquier línea con "packageManager" y "pnpm@X.Y.Z"
             LINE=$(grep packageManager package.json | grep pnpm | head -1 || true)
             if [ -n "$LINE" ]; then
               PM_VER=$(echo "$LINE" | sed -E 's/.*pnpm@([0-9]+\.[0-9]+\.[0-9]+[^"]*).*/\1/')
               echo "✅ Versión detectada desde packageManager: pnpm@$PM_VER"
             fi
           fi
-
-          # Fallback si no se detectó
           if [ -z "$PM_VER" ]; then
             PM_VER="9.15.1"
-            echo "⚠️ packageManager no detectado → usando pnpm@$PM_VER por defecto"
+            echo "⚠️  packageManager no detectado → usando pnpm@$PM_VER por defecto"
           fi
 
-          # ── Detectar arquitectura ──────────────────────────────────────
-          case "$(uname -m)" in
-            x86_64)        ARCH="x64" ;;
-            aarch64|arm64) ARCH="arm64" ;;
-            *)             ARCH="x64" ;;
-          esac
-          echo "Arquitectura: linux-$ARCH"
+          # ── Instalar pnpm en una carpeta dedicada via npm ──────────────
+          # NO usamos:
+          #   - corepack:           cache corrupto en runner self-hosted
+          #   - GitHub Releases:    pnpm 11.x no se publica como binario standalone
+          #   - npm install -g:     requiere permisos globales en el runner
+          # Estrategia: npm install local en un sandbox propio, agregando
+          # node_modules/.bin al PATH. pnpm queda como paquete npm normal,
+          # invocado por node directamente (sin shim de corepack).
+          INSTALL_DIR="$HOME/.pnpm-bootstrap"
+          rm -rf "$INSTALL_DIR"
+          mkdir -p "$INSTALL_DIR"
+          cd "$INSTALL_DIR"
 
-          # ── Descargar binario directamente ─────────────────────────────
-          PNPM_DIR="$HOME/.local/bin"
-          mkdir -p "$PNPM_DIR"
-          URL="https://github.com/pnpm/pnpm/releases/download/v${PM_VER}/pnpm-linux-${ARCH}"
-          echo "Descargando: $URL"
-          curl -fsSL "$URL" -o "$PNPM_DIR/pnpm"
-          if [ $? -ne 0 ] || [ ! -s "$PNPM_DIR/pnpm" ]; then
-            echo "❌ Falló la descarga del binario de pnpm v${PM_VER}"
+          # Mini package.json para que npm no se queje
+          cat > package.json <<EOF
+          {
+            "name": "pnpm-bootstrap",
+            "version": "1.0.0",
+            "private": true
+          }
+          EOF
+
+          echo "Instalando pnpm@${PM_VER} desde npm registry..."
+          npm install --no-save --no-audit --no-fund --no-package-lock "pnpm@${PM_VER}" 2>&1 | tail -10
+          NPM_EXIT=${PIPESTATUS[0]}
+
+          PNPM_BIN="$INSTALL_DIR/node_modules/.bin/pnpm"
+          if [ "$NPM_EXIT" -ne 0 ] || [ ! -f "$PNPM_BIN" ]; then
+            echo "❌ npm install pnpm@${PM_VER} falló o no produjo el binario"
+            echo "   Verificar que la versión existe en https://www.npmjs.com/package/pnpm"
             exit 1
           fi
-          chmod +x "$PNPM_DIR/pnpm"
 
           # Exportar al PATH del workflow
-          echo "$PNPM_DIR" >> "$GITHUB_PATH"
+          echo "$INSTALL_DIR/node_modules/.bin" >> "$GITHUB_PATH"
 
-          # Verificar
-          "$PNPM_DIR/pnpm" --version
+          # Verificar invocación directa (sin pasar por corepack)
+          "$PNPM_BIN" --version
           echo "version=$PM_VER" >> "$GITHUB_OUTPUT"
 
       - name: Tests Node (pnpm test --coverage)
