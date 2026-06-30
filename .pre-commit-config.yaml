@@ -1,0 +1,51 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# .pre-commit-config.yaml — Hooks locales del repositorio pipelines-centrales
+#
+# Convención del equipo DevOps SIMON Movilidad.
+# Instalación local (una sola vez):
+#   pip install pre-commit
+#   pre-commit install
+#
+# Ejecutar manualmente sobre todo el repo:
+#   pre-commit run --all-files
+# ═══════════════════════════════════════════════════════════════════════════
+
+repos:
+  # ─────────────────────────────────────────────────────────────────────────
+  # Hooks básicos (higiene del repo)
+  # ─────────────────────────────────────────────────────────────────────────
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        args: [--markdown-linebreak-ext=md]
+      - id: end-of-file-fixer
+      - id: check-yaml
+        args: [--allow-multiple-documents]
+      - id: check-json
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: [--maxkb=500]
+      - id: detect-private-key
+      - id: mixed-line-ending
+        args: [--fix=lf]
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # actionlint — Linter oficial de GitHub Actions
+  # Detecta errores de sintaxis, expresiones inválidas, paths mal escritos
+  # ─────────────────────────────────────────────────────────────────────────
+  - repo: https://github.com/rhysd/actionlint
+    rev: v1.7.7
+    hooks:
+      - id: actionlint
+        files: ^\.github/workflows/.*\.ya?ml$
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # yamllint — Estilo y consistencia de archivos YAML
+  # Config en .yamllint.yaml (line-length 200 para tolerar workflows largos)
+  # ─────────────────────────────────────────────────────────────────────────
+  - repo: https://github.com/adrienverge/yamllint
+    rev: v1.35.1
+    hooks:
+      - id: yamllint
+        args: [-c=.yamllint.yaml]

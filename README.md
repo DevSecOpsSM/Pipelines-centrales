@@ -47,6 +47,49 @@ La estrategia se basa en el principio de **Shift Left** (desplazar la seguridad 
 | 3 | `sec-sca.yml` | OWASP Dependency-Check | CVEs en dependencias (SCA) |
 | 4 | `sec-containers.yml` | KICS · Hadolint · Trivy | Seguridad IaC y contenedores |
 
+## Modelo de ramas
+
+Este repo sigue el branch model estándar del equipo DevOps de SIMON. Cambios
+nuevos llegan vía `feature/*` o `fix/*` y avanzan en línea recta:
+
+```
+feature/*  ─┐
+fix/*      ─┴──▶ develop ──▶ uat ──▶ main
+                  (integ)    (stage)   (prod / consumido por los repos cliente)
+```
+
+| Rama destino | Acepta PRs solo desde |
+|--------------|-----------------------|
+| `main` | `uat` |
+| `uat` | `develop` |
+| `develop` | `feature/*` o `fix/*` |
+
+El workflow [`validate-pr-source.yml`](.github/workflows/validate-pr-source.yml)
+enforce este modelo automáticamente. Cualquier PR con source inválido es
+rechazado con un comentario explicativo.
+
+Los repos consumidores referencian este repo con `@main` (versión rolling) o
+`@vX.Y.Z` (versión pinned) — el ref **siempre** debe apuntar a un commit
+mergeado en `main`.
+
+## Cómo contribuir
+
+Antes de abrir un PR:
+
+1. Lee [CONTRIBUTING.md](CONTRIBUTING.md) — convenciones de commit
+   (Conventional Commits), flujo de ramas, reglas inquebrantables.
+2. Instala los hooks locales:
+   ```bash
+   pip install pre-commit
+   pre-commit install
+   ```
+3. Abre el PR contra `develop` desde una rama `feature/*` o `fix/*`.
+
+Toda PR pasa por:
+- ✅ `validate-pr-source` — enforce del branch model
+- ✅ Revisión de [CODEOWNERS](.github/CODEOWNERS)
+- ✅ Checks de actionlint + yamllint (vía pre-commit)
+
 ## Cómo usar en un repositorio de aplicación
 
 Copia el archivo [examples/seguridad.yml](examples/seguridad.yml) a `.github/workflows/seguridad.yml` en tu repositorio:
