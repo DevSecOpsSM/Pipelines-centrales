@@ -1,8 +1,13 @@
 # ═══════════════════════════════════════════════════════════════════════════
-# SSDLC · Etapa 0 — Pre-commit Hooks (Kicks)
-# Ejecuta los hooks configurados en .pre-commit-config.yaml del repositorio
-# Si no existe el archivo, genera un reporte informativo con ejemplo mínimo
-# Modo Auditoría: reporta sin bloquear el pipeline
+# SSDLC · Etapa 1 — Pre-commit Hooks (Kicks)
+#
+# Ejecuta los hooks configurados en .pre-commit-config.yaml del repo consumidor.
+# Si no existe el archivo:
+#   - El reporte HTML muestra una guía con ejemplo mínimo (modo informativo)
+#   - El qg-summary marca scan_status="skipped" — no bloquea el Quality Gate
+#
+# Modo Auditoría: reporta sin bloquear. La decisión final la toma el
+# consolidador en el `seguridad.yml` del repo consumidor.
 # ═══════════════════════════════════════════════════════════════════════════
 
 name: Security - Pre-commit Hooks
@@ -32,7 +37,6 @@ jobs:
       - name: Instalar pre-commit
         run: pip install pre-commit --quiet
 
-      # Guardamos el texto largo en una variable de entorno segura
       - name: Ejecutar hooks (si existe configuración)
         id: hooks
         continue-on-error: true
@@ -49,7 +53,7 @@ jobs:
             ├─────────────────────────────────────────────────────────────────┤
             │ repos:                                                          │
             │   - repo: https://github.com/pre-commit/pre-commit-hooks        │
-            │     rev: v4.6.0                                                 │
+            │     rev: v5.0.0                                                 │
             │     hooks:                                                      │
             │       - id: trailing-whitespace                                 │
             │       - id: end-of-file-fixer                                   │
@@ -72,24 +76,25 @@ jobs:
           OUT="reports/${{ github.event.repository.name }}/kicks-output.txt"
 
           if [ -f .pre-commit-config.yaml ]; then
-            echo "has_config=true" >> $GITHUB_OUTPUT
-            echo "=== Pre-commit hooks ejecutados en: ${{ github.event.repository.name }} ===" > "$OUT"
-            echo "Fecha: $(date -u '+%Y-%m-%d %H:%M UTC')" >> "$OUT"
-            echo "" >> "$OUT"
-            pre-commit run --all-files --show-diff-on-failure 2>&1 >> "$OUT" || true
+            echo "has_config=true" >> "$GITHUB_OUTPUT"
+            {
+              echo "=== Pre-commit hooks ejecutados en: ${{ github.event.repository.name }} ==="
+              echo "Fecha: $(date -u '+%Y-%m-%d %H:%M UTC')"
+              echo ""
+            } > "$OUT"
+            pre-commit run --all-files --show-diff-on-failure >> "$OUT" 2>&1 || true
           else
-            echo "has_config=false" >> $GITHUB_OUTPUT
+            echo "has_config=false" >> "$GITHUB_OUTPUT"
             echo "$INFO_MSG" > "$OUT"
           fi
 
-      # Guardamos el script de Python en una variable para evitar errores de indentación
       - name: Generar reporte HTML
         if: always()
         env:
-          REPO_NAME: ${{ github.event.repository.name }}
-          REPO_FULL: ${{ github.repository }}
-          SHA: ${{ github.sha }}
-          REF: ${{ github.ref_name }}
+          REPO_NAME:  ${{ github.event.repository.name }}
+          REPO_FULL:  ${{ github.repository }}
+          SHA:        ${{ github.sha }}
+          REF:        ${{ github.ref_name }}
           HAS_CONFIG: ${{ steps.hooks.outputs.has_config }}
           PYTHON_SCRIPT: |
             import os, html
@@ -117,7 +122,7 @@ jobs:
                 badge_border = "#4EDA56" if passed else "#F63D3D"
             else:
                 status_class = "warn"
-                status_label = "Sin configuración de pre-commit"
+                status_label = "Sin configuración de pre-commit (etapa omitida)"
                 badge_color  = "#FAD900"
                 badge_bg     = "rgba(250,217,0,0.15)"
                 badge_border = "#FAD900"
@@ -157,8 +162,6 @@ jobs:
                 .header h1{{font-size:26px;font-weight:700;color:#FFFFFF;margin-top:16px}}
                 .meta{{color:#B0B0B0;font-size:13px;margin-top:10px}}
                 .meta span{{margin-right:20px}}
-                .btn-pdf{{position:absolute;top:40px;right:40px;background:#00F1C7;color:#000000;font-weight:bold;padding:10px 20px;border:none;border-radius:6px;cursor:pointer;font-size:14px;transition:0.2s}}
-                .btn-pdf:hover{{background:#00c4a0}}
                 .status-section{{padding:30px;max-width:1100px;margin:0 auto}}
                 .status-badge{{display:inline-block;padding:10px 24px;border-radius:8px;font-size:15px;font-weight:700;border:1px solid {badge_border};background:{badge_bg};color:{badge_color}}}
                 .section{{max-width:1100px;margin:0 auto 30px;padding:0 30px}}
@@ -168,12 +171,10 @@ jobs:
                 .output-box{{background:#000000;border:1px solid #373737;border-radius:8px;padding:24px;overflow-x:auto}}
                 pre{{font-family:'Cascadia Code','Fira Code','Courier New',monospace;font-size:13px;line-height:1.7;color:#D1D1D1;white-space:pre-wrap;word-wrap:break-word}}
                 .footer{{text-align:center;padding:30px;color:#888888;font-size:12px;border-top:1px solid #373737;margin-top:20px}}
-                @media print{{body{{background:#FFFFFF !important;color:#000000 !important}}.header{{background:#FFFFFF !important;border-bottom:2px solid #00F1C7 !important}}.header h1{{color:#000000 !important}}.btn-pdf{{display:none !important}}.output-box{{border:1px solid #D1D1D1 !important;background:#FFFFFF !important}}pre{{color:#1A1A1A !important}}}}
               </style>
             </head>
             <body>
               <div class="header">
-                <button class="btn-pdf" onclick="window.print()">📥 Descargar PDF</button>
                 <div class="logo-container">{_logo_h}</div>
                 <span class="tool-badge">PRE-COMMIT HOOKS — KICKS</span>
                 <h1>Pre-commit Security Hooks Report</h1>
@@ -204,11 +205,92 @@ jobs:
             print(f"[Kicks] has_config={has_config} → {out_path}")
         run: python3 -c "$PYTHON_SCRIPT"
 
-      - name: Subir reporte
+      # ────────────────────────────────────────────────────────────────────
+      # Quality Gate — Generar qg-summary normalizado (CVSSv3)
+      #
+      # Mapeo:
+      #   - no .pre-commit-config.yaml      → scan_status="skipped" (no bloquea)
+      #   - hooks pasaron sin fallos        → completed, 0 findings (no bloquea)
+      #   - hook(s) con "Failed"            → completed, 1 low por failure
+      #
+      # El consolidador del seguridad.yml suma estos low contra el umbral
+      # acumulado (> 20 total bloquea).
+      # ────────────────────────────────────────────────────────────────────
+      - name: Generar qg-summary-sec-hooks.json
+        if: always()
+        env:
+          REPO_NAME:  ${{ github.event.repository.name }}
+          HAS_CONFIG: ${{ steps.hooks.outputs.has_config }}
+          PYTHON_SCRIPT: |
+            import json, os, re
+
+            repo_name  = os.environ['REPO_NAME']
+            has_config = os.environ.get('HAS_CONFIG', 'false') == 'true'
+            out_txt    = f"reports/{repo_name}/kicks-output.txt"
+
+            if not has_config:
+                scan_status = "skipped"
+                scan_reason = "No .pre-commit-config.yaml en el repositorio"
+                low_count   = 0
+                findings    = []
+            else:
+                scan_status = "completed"
+                scan_reason = ""
+                output = ""
+                if os.path.exists(out_txt):
+                    output = open(out_txt, encoding="utf-8").read()
+                # Cada línea con "Failed" cuenta como una violación (low severity)
+                failed_lines = re.findall(r'^(.+?)\.{2,}.*Failed\s*$', output, re.MULTILINE)
+                low_count = len(failed_lines)
+                findings = [
+                    {
+                        "tool":        "pre-commit",
+                        "severity":    "low",
+                        "rule_id":     name.strip(),
+                        "location":    "—",
+                        "description": f"Hook '{name.strip()}' failed",
+                    }
+                    for name in failed_lines[:10]
+                ]
+
+            summary = {
+                "schema_version":         "1.0",
+                "workflow":               "sec-hooks",
+                "workflow_display_name":  "Pre-commit Hooks",
+                "stage_number":           1,
+                "tools":                  ["pre-commit"],
+                "scan_status":            scan_status,
+                "scan_status_reason":     scan_reason,
+                "severity_counts": {
+                    "critical": 0, "high": 0, "medium": 0,
+                    "low":      low_count,
+                    "info":     0,
+                },
+                "top_findings":           findings,
+                "workflow_blocked":       False,  # sec-hooks nunca bloquea por sí solo
+                "block_reason":           "",
+            }
+
+            out_path = f"reports/{repo_name}/qg-summary-sec-hooks.json"
+            with open(out_path, "w", encoding="utf-8") as fh:
+                json.dump(summary, fh, indent=2, ensure_ascii=False)
+            print(f"[qg-summary] sec-hooks → status={scan_status} low={low_count}")
+        run: python3 -c "$PYTHON_SCRIPT"
+
+      - name: Subir reporte HTML
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: security-hooks-report
-          path: reports/${{ github.event.repository.name }}/
+          path: reports/${{ github.event.repository.name }}/kicks-report.html
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Subir qg-summary (input para Quality Gate consolidador)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qg-summary-sec-hooks
+          path: reports/${{ github.event.repository.name }}/qg-summary-sec-hooks.json
           retention-days: 30
           if-no-files-found: warn
