@@ -1,8 +1,15 @@
 # ═══════════════════════════════════════════════════════════════════════════
-# SSDLC · Etapa 3 — SCA (Software Composition Analysis)
+# SSDLC · Etapa 4 — SCA (Software Composition Analysis)
+#
 # Herramienta: OWASP Dependency-Check (Docker)
-# Modo Auditoría: reporta hallazgos sin bloquear el pipeline
-# Fix NVD: Cache semanal + delay API para evitar 429 y timeout de 6h
+# Fix NVD 429: cache semanal de la BD NVD + delay 6s entre peticiones
+# (NVD_API_KEY opcional acelera el escaneo)
+#
+# Mapeo CVSSv3:
+#   Dependency-Check ya usa CVSSv3 nativo (CRITICAL/HIGH/MEDIUM/LOW) → directo
+#
+# Modo Auditoría: continue-on-error en el scan. La decisión final la toma el
+# consolidador en el `seguridad.yml` del repo consumidor.
 # ═══════════════════════════════════════════════════════════════════════════
 
 name: Security - SCA (OWASP Dependency-Check)
@@ -11,7 +18,7 @@ on:
   workflow_call:
     secrets:
       NVD_API_KEY:
-        description: "API Key opcional de NVD (nvd.nist.gov) para mayor velocidad de descarga"
+        description: "API Key opcional de NVD (nvd.nist.gov) para acelerar el escaneo"
         required: false
 
 jobs:
@@ -27,7 +34,7 @@ jobs:
 
       - name: Obtener clave de caché semanal
         id: cache-key
-        run: echo "week=$(date +%Y-W%V)" >> $GITHUB_OUTPUT
+        run: echo "week=$(date +%Y-W%V)" >> "$GITHUB_OUTPUT"
 
       - name: Restaurar caché NVD (base de datos semanal)
         id: nvd-cache
@@ -42,7 +49,6 @@ jobs:
         run: |
           mkdir -p .dc-cache
           mkdir -p "reports/${{ github.event.repository.name }}"
-          # Permisos para que el contenedor Docker pueda escribir en la caché
           chmod -R 777 .dc-cache
 
       - name: Ejecutar OWASP Dependency-Check (Docker)
@@ -50,16 +56,14 @@ jobs:
         env:
           NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
         run: |
-          # Construir argumentos opcionales
           NVD_ARGS=""
           if [ -n "$NVD_API_KEY" ]; then
             NVD_ARGS="--nvdApiKey $NVD_API_KEY"
-            echo "[DC] Usando NVD API Key → mayor velocidad de actualización"
+            echo "[DC] Usando NVD API Key — mayor velocidad de actualización"
           else
-            echo "[DC] Sin NVD API Key → usando delay de 6s entre peticiones para evitar rate-limit"
+            echo "[DC] Sin NVD API Key — delay 6s entre peticiones para evitar rate-limit"
           fi
 
-          # Quitamos el 'tail -20' para no ocultar errores de descarga o escaneo
           docker run --rm \
             -v "$PWD:/src" \
             -v "$PWD/.dc-cache:/usr/share/dependency-check/data" \
@@ -68,20 +72,19 @@ jobs:
             --scan /src \
             --format HTML \
             --format JSON \
-            --out /src/reports/${{ github.event.repository.name }} \
+            --out "/src/reports/${{ github.event.repository.name }}" \
             --failOnCVSS 99 \
             --nvdApiDelay 6000 \
             --disableAssembly \
             $NVD_ARGS || true
 
-      # Movemos el script de Python a una variable de entorno para evitar problemas de indentación YAML
       - name: Fallback HTML si Dependency-Check no generó reporte
         if: always()
         env:
           REPO_NAME: ${{ github.event.repository.name }}
           REPO_FULL: ${{ github.repository }}
-          SHA: ${{ github.sha }}
-          REF: ${{ github.ref_name }}
+          SHA:       ${{ github.sha }}
+          REF:       ${{ github.ref_name }}
           PYTHON_SCRIPT: |
             import json, html, os
             from datetime import datetime
@@ -97,10 +100,10 @@ jobs:
             json_path = os.path.join(out_dir, "dependency-check-report.json")
 
             if os.path.exists(html_path) and os.path.getsize(html_path) > 1000:
-                print(f"[DC] Reporte HTML nativo encontrado ({os.path.getsize(html_path)} bytes) — OK")
+                print(f"[DC] Reporte HTML nativo OK ({os.path.getsize(html_path)} bytes)")
                 exit(0)
 
-            print("[DC] Reporte HTML nativo no encontrado — generando desde JSON...")
+            print("[DC] Reporte HTML nativo ausente — generando desde JSON...")
 
             vulns = []
             dep_count = 0
@@ -112,29 +115,9 @@ jobs:
                     for dep in deps:
                         for v in dep.get("vulnerabilities", []):
                             v["_dep"] = dep.get("fileName", "?")
-                            v["_ecosystem"] = dep.get("ecosystem", "?")
                             vulns.append(v)
                 except Exception as e:
                     print(f"[DC] Error leyendo JSON: {e}")
-
-            def translate_es(text):
-                if not text or len(str(text).strip()) < 5:
-                    return str(text)
-                try:
-                    from deep_translator import GoogleTranslator
-                    result = GoogleTranslator(source='auto', target='es').translate(str(text)[:500])
-                    return result if result else str(text)
-                except Exception:
-                    return str(text)
-
-            def tdesc(en):
-                es = translate_es(en)
-                if es != en:
-                    return (f'<span title="EN: {html.escape(en)}" '
-                            f'style="cursor:help;border-bottom:1px dashed #444">'
-                            f'{html.escape(es)}</span>'
-                            f' <span style="font-size:10px;color:#58a6ff">🌐</span>')
-                return html.escape(en)
 
             def cvss_score(v):
                 return float(v.get("cvssv3", {}).get("baseScore",
@@ -149,22 +132,18 @@ jobs:
                     counts[sev] += 1
 
             SEV_CSS = {
-                "CRITICAL": ("badge-critical", "#f85149"),
-                "HIGH":     ("badge-high",     "#d29922"),
-                "MEDIUM":   ("badge-medium",   "#58a6ff"),
-                "LOW":      ("badge-low",      "#7d8590"),
+                "CRITICAL": "badge-critical", "HIGH": "badge-high",
+                "MEDIUM":   "badge-medium",   "LOW":  "badge-low",
             }
 
             rows = ""
             for v in vulns[:300]:
-                sev     = v.get("severity", "?").upper()
-                css, _  = SEV_CSS.get(sev, ("badge-low", "#7d8590"))
-                name    = html.escape(v.get("name", "?"))
-                dep     = html.escape(v.get("_dep", "?"))
-                score_v3 = v.get("cvssv3", {}).get("baseScore", "")
-                score_v2 = v.get("cvssv2", {}).get("score", "")
-                score   = str(score_v3) if score_v3 else str(score_v2) if score_v2 else "N/A"
-                desc    = tdesc(v.get("description", "")[:180])
+                sev  = v.get("severity", "?").upper()
+                css  = SEV_CSS.get(sev, "badge-low")
+                name = html.escape(v.get("name", "?"))
+                dep  = html.escape(v.get("_dep", "?"))
+                score = v.get("cvssv3", {}).get("baseScore", "") or v.get("cvssv2", {}).get("score", "") or "N/A"
+                desc = html.escape(v.get("description", "")[:180])
                 rows += f"""<tr>
                   <td><span class="badge {css}">{sev}</span></td>
                   <td class="cvss-score">{score}</td>
@@ -177,9 +156,9 @@ jobs:
             if total == 0 and dep_count == 0:
                 status_note = """
                 <div class="notice">
-                  ⚠️ <strong>Nota:</strong> OWASP Dependency-Check no pudo actualizar la base de datos NVD
-                  o no encontró archivos de dependencias en el repositorio.
-                  Verifique que el repositorio contenga archivos como <code>pom.xml</code>,
+                  ⚠️ <strong>Nota:</strong> OWASP Dependency-Check no pudo actualizar NVD
+                  o no encontró archivos de dependencias.
+                  Verifique que el repo contenga <code>pom.xml</code>,
                   <code>package.json</code>, <code>requirements.txt</code>, <code>go.sum</code>, etc.
                 </div>"""
 
@@ -187,7 +166,7 @@ jobs:
               <div class="no-findings">
                 <div class="no-findings-icon">{'⚠️' if dep_count == 0 else '✅'}</div>
                 <h3>{'Sin datos de dependencias' if dep_count == 0 else 'Sin vulnerabilidades detectadas'}</h3>
-                <p>{'No se encontraron archivos de manifiesto de dependencias.' if dep_count == 0 else f'Se analizaron {dep_count} dependencias sin hallazgos CVE.'}</p>
+                <p>{'No se encontraron archivos de manifiesto.' if dep_count == 0 else f'{dep_count} dependencias analizadas sin hallazgos CVE.'}</p>
               </div>"""
 
             table = f"""
@@ -224,19 +203,13 @@ jobs:
                 .header h1{{font-size:26px;font-weight:700;color:#FFFFFF;margin-top:16px}}
                 .meta{{color:#B0B0B0;font-size:13px;margin-top:10px}}
                 .meta span{{margin-right:20px}}
-                .btn-pdf{{position:absolute;top:40px;right:40px;background:#00F1C7;color:#000000;font-weight:bold;padding:10px 20px;border:none;border-radius:6px;cursor:pointer;font-size:14px;transition:0.2s}}
-                .btn-pdf:hover{{background:#00c4a0}}
                 .cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:16px;padding:30px;max-width:1100px;margin:0 auto}}
                 .card{{background:#373737;border-radius:8px;padding:20px;text-align:center;border-top:4px solid}}
-                .card-total{{border-top-color:#B0B0B0}}
-                .card-critical{{border-top-color:#F63D3D}}
-                .card-high{{border-top-color:#FAD900}}
-                .card-medium{{border-top-color:#00F1C7}}
-                .card-low{{border-top-color:#888888}}
+                .card-total{{border-top-color:#B0B0B0}}.card-critical{{border-top-color:#F63D3D}}
+                .card-high{{border-top-color:#FAD900}}.card-medium{{border-top-color:#00F1C7}}.card-low{{border-top-color:#888888}}
                 .card-num{{font-size:36px;font-weight:800;line-height:1}}
                 .card-label{{font-size:11px;color:#B0B0B0;text-transform:uppercase;margin-top:8px;letter-spacing:1px}}
-                .num-total{{color:#FFFFFF}}.num-crit{{color:#F63D3D}}.num-high{{color:#FAD900}}
-                .num-med{{color:#00F1C7}}.num-low{{color:#888888}}
+                .num-total{{color:#FFFFFF}}.num-crit{{color:#F63D3D}}.num-high{{color:#FAD900}}.num-med{{color:#00F1C7}}.num-low{{color:#888888}}
                 .section{{max-width:1100px;margin:0 auto 30px;padding:0 30px}}
                 .section-title{{font-size:16px;font-weight:600;color:#00F1C7;margin-bottom:14px;padding-bottom:8px;border-bottom:1px solid #373737}}
                 .wrap{{background:#000000;border:1px solid #373737;border-radius:8px;overflow:hidden}}
@@ -259,12 +232,10 @@ jobs:
                 .notice{{background:rgba(250,217,0,0.08);border:1px solid #FAD900;border-radius:8px;padding:16px 20px;margin-bottom:20px;font-size:13px;color:#FAD900}}
                 .notice code{{background:#373737;padding:2px 6px;border-radius:4px;font-size:12px;color:#E7E7E7}}
                 .footer{{text-align:center;padding:30px;color:#888888;font-size:12px;border-top:1px solid #373737;margin-top:20px}}
-                @media print{{body{{background:#FFFFFF !important;color:#000000 !important}}.header{{background:#FFFFFF !important;border-bottom:2px solid #00F1C7 !important}}.header h1{{color:#000000 !important}}.btn-pdf{{display:none !important}}.wrap{{border:1px solid #D1D1D1 !important;background:#FFFFFF !important}}thead{{background:#F6F6F6 !important}}th{{color:#373737 !important}}td{{border-bottom:1px solid #E7E7E7 !important;color:#1A1A1A !important}}.card{{background:#F6F6F6 !important;border-top:4px solid !important}}}}
               </style>
             </head>
             <body>
               <div class="header">
-                <button class="btn-pdf" onclick="window.print()">📥 Descargar PDF</button>
                 <div class="logo-container">{_logo_dc}</div>
                 <span class="tool-badge">OWASP DEPENDENCY-CHECK — SCA</span>
                 <h1>Software Composition Analysis (SCA) Report</h1>
@@ -284,25 +255,127 @@ jobs:
               </div>
               <div class="section">
                 {status_note}
-                <div class="section-title">Vulnerabilidades en Dependencias — OWASP Dependency-Check</div>
+                <div class="section-title">Vulnerabilidades en Dependencias</div>
                 <div class="wrap">{table}{no_findings}</div>
               </div>
-              <div class="footer">Generado por <strong>pipelines-centrales</strong> · Equipo Cybersecurity · Simon · {fecha}<br><em>Base de datos NVD · Cache semanal activa</em></div>
+              <div class="footer">Generado por <strong>pipelines-centrales</strong> · Equipo Cybersecurity · Simon · {fecha}<br><em>Base NVD · Cache semanal</em></div>
             </body>
             </html>"""
 
             with open(html_path, "w", encoding="utf-8") as fh:
                 fh.write(report)
             print(f"[DC Fallback] {total} CVE(s) en {dep_count} dependencia(s) → {html_path}")
-        run: |
-          pip install deep-translator --quiet 2>/dev/null || true
-          python3 -c "$PYTHON_SCRIPT"
+        run: python3 -c "$PYTHON_SCRIPT"
 
-      - name: Subir reporte
+      # ────────────────────────────────────────────────────────────────────
+      # Quality Gate — Generar qg-summary normalizado (CVSSv3)
+      #
+      # Mapeo Dependency-Check → CVSSv3:
+      #   Dependency-Check ya usa CRITICAL/HIGH/MEDIUM/LOW (CVSSv3 nativo)
+      #   Mapeo directo. UNKNOWN/sin severity → low (conservador).
+      #
+      # workflow_blocked si critical/high/medium > 0.
+      # ────────────────────────────────────────────────────────────────────
+      - name: Generar qg-summary-sec-sca.json
+        if: always()
+        env:
+          REPO_NAME: ${{ github.event.repository.name }}
+          PYTHON_SCRIPT: |
+            import json, os
+
+            repo_name = os.environ['REPO_NAME']
+            json_path = f"reports/{repo_name}/dependency-check-report.json"
+
+            counts = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
+            top    = []
+            dep_count = 0
+            scan_status = "completed"
+            scan_reason = ""
+
+            if os.path.exists(json_path):
+                try:
+                    data = json.load(open(json_path, encoding="utf-8"))
+                    deps = data.get("dependencies", [])
+                    dep_count = len(deps)
+                    all_vulns = []
+                    for dep in deps:
+                        for v in dep.get("vulnerabilities", []):
+                            v["_dep"] = dep.get("fileName", "?")
+                            all_vulns.append(v)
+
+                    SEV_MAP = {"CRITICAL":"critical","HIGH":"high","MEDIUM":"medium","LOW":"low"}
+                    for v in all_vulns:
+                        sev_native = (v.get("severity") or "").upper()
+                        sev_cvss   = SEV_MAP.get(sev_native, "low")
+                        counts[sev_cvss] += 1
+
+                    # Top 10 ordenados por CVSS score descendente
+                    def cvss_score(v):
+                        return float(v.get("cvssv3", {}).get("baseScore",
+                               v.get("cvssv2", {}).get("score", 0)) or 0)
+                    all_vulns.sort(key=cvss_score, reverse=True)
+                    for v in all_vulns[:10]:
+                        sev_native = (v.get("severity") or "").upper()
+                        top.append({
+                            "tool":        "dependency-check",
+                            "severity":    SEV_MAP.get(sev_native, "low"),
+                            "rule_id":     v.get("name", "?"),
+                            "location":    str(v.get("_dep", "?")),
+                            "description": str(v.get("description", ""))[:200],
+                        })
+                except Exception as e:
+                    scan_status = "error"
+                    scan_reason = f"No se pudo procesar JSON: {e}"
+            else:
+                # No hay JSON — puede ser que el escaneo fallara o no haya dependencias
+                scan_status = "skipped"
+                scan_reason = "No se encontró JSON de Dependency-Check (sin dependencias o NVD sin actualizar)"
+
+            blocked = counts["critical"] > 0 or counts["high"] > 0 or counts["medium"] > 0
+            reason  = ""
+            if blocked:
+                parts = []
+                for sev in ("critical", "high", "medium"):
+                    if counts[sev]:
+                        parts.append(f"{counts[sev]} {sev}")
+                reason = ", ".join(parts)
+
+            summary = {
+                "schema_version":         "1.0",
+                "workflow":               "sec-sca",
+                "workflow_display_name":  "SCA (OWASP Dependency-Check)",
+                "stage_number":           4,
+                "tools":                  ["dependency-check"],
+                "scan_status":            scan_status,
+                "scan_status_reason":     scan_reason,
+                "severity_counts":        counts,
+                "top_findings":           top,
+                "workflow_blocked":       blocked,
+                "block_reason":           reason,
+            }
+
+            out_path = f"reports/{repo_name}/qg-summary-sec-sca.json"
+            with open(out_path, "w", encoding="utf-8") as fh:
+                json.dump(summary, fh, indent=2, ensure_ascii=False)
+            print(f"[qg-summary] sec-sca → {counts} blocked={blocked} status={scan_status}")
+        run: python3 -c "$PYTHON_SCRIPT"
+
+      - name: Subir reporte HTML + JSON
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: security-sca-dependency-check
-          path: reports/${{ github.event.repository.name }}/
+          path: |
+            reports/${{ github.event.repository.name }}/dependency-check-report.html
+            reports/${{ github.event.repository.name }}/dependency-check-report.json
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Subir qg-summary (input para Quality Gate consolidador)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qg-summary-sec-sca
+          path: reports/${{ github.event.repository.name }}/qg-summary-sec-sca.json
           retention-days: 30
           if-no-files-found: warn

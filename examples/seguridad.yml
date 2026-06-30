@@ -1,12 +1,16 @@
 # ═══════════════════════════════════════════════════════════════════════════
 # EJEMPLO — Workflow consumidor (repositorio de aplicación)
 # Archivo: .github/workflows/seguridad.yml
-# Copiar este archivo en cada repositorio de aplicación de la organización.
 #
-# Este archivo NO contiene lógica de seguridad — solo llama a los pipelines
-# centralizados en MiOrg/pipelines-centrales
+# Copia este archivo en cada repositorio de aplicación de la organización.
+# No contiene lógica de seguridad — solo llama a los workflows centralizados
+# en <Org>/pipelines-centrales y al final ejecuta el Quality Gate consolidado.
 #
-# Pre-requisito: configurar la organización según README de pipelines-centrales
+# Pre-requisitos (1 sola vez, a nivel organización):
+#   1. pipelines-centrales con visibility = Internal
+#   2. Allow reusable workflows en Settings → Actions
+#   3. (Opcional) Secret organizacional NVD_API_KEY
+#   4. (Si usas SonarQube) Secret SONAR_TOKEN por-repo u organizacional
 # ═══════════════════════════════════════════════════════════════════════════
 
 name: Seguridad SSDLC
@@ -20,139 +24,196 @@ on:
   pull_request:
     branches:
       - main
+      - uat
+      - develop
   workflow_dispatch: {}
   schedule:
     # Escaneo nocturno completo: lunes a viernes a las 2:00 AM UTC
     - cron: "0 2 * * 1-5"
 
-# Permisos mínimos requeridos globales
 permissions:
   contents: read
   actions: read
-  issues: write
+  pull-requests: write    # Necesario para que quality-gate-consolidated comente en el PR
+  issues: write           # Reservado por compatibilidad (DEPRECATED — issues no es el canal nuevo)
+
 jobs:
 
   # ──────────────────────────────────────────────────────────────────────
-  # ETAPA 1 — Detección de secretos (Gitleaks + TruffleHog)
+  # ETAPA 1 — Pre-commit Hooks (Kicks)
   # ──────────────────────────────────────────────────────────────────────
-  secretos:
-    name: "Etapa 1 · Secrets Scan"
-    uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-secrets.yml@main
-    # secrets: inherit  # Descomentar si necesitas pasar PIPELINE_TOKEN
+  hooks:
+    name: "Etapa 1 · Pre-commit Hooks"
+    uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-hooks.yml@main
 
   # ──────────────────────────────────────────────────────────────────────
-  # ETAPA 2 — SAST: Análisis estático (Semgrep OWASP Top 10)
+  # ETAPA 2 — Detección de secretos (Gitleaks)
+  # ──────────────────────────────────────────────────────────────────────
+  secretos:
+    name: "Etapa 2 · Secrets Scan"
+    uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-secrets.yml@main
+
+  # ──────────────────────────────────────────────────────────────────────
+  # ETAPA 3 — SAST: Análisis estático (Semgrep OWASP Top 10)
   # ──────────────────────────────────────────────────────────────────────
   sast:
-    name: "Etapa 2 · SAST"
+    name: "Etapa 3 · SAST (Semgrep)"
     uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-sast.yml@main
 
   # ──────────────────────────────────────────────────────────────────────
-  # ETAPA 3 — Seguridad de contenedores (KICS + Hadolint + Trivy)
+  # ETAPA 4 — SCA: Análisis de dependencias (OWASP Dependency-Check)
+  # ──────────────────────────────────────────────────────────────────────
+  sca:
+    name: "Etapa 4 · SCA (Dependency-Check)"
+    uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-sca.yml@main
+    secrets:
+      NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+
+  # ──────────────────────────────────────────────────────────────────────
+  # ETAPA 5 — IaC: Análisis de Terraform (Checkov)
+  # ──────────────────────────────────────────────────────────────────────
+  iac:
+    name: "Etapa 5 · IaC (Checkov)"
+    uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-iac-terraform.yml@main
+
+  # ──────────────────────────────────────────────────────────────────────
+  # ETAPA 6 — Seguridad de contenedores (KICS + Hadolint + Trivy)
   # ──────────────────────────────────────────────────────────────────────
   contenedores:
-    name: "Etapa 3 · Container Security"
+    name: "Etapa 6 · Container Security"
     uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-containers.yml@main
 
   # ──────────────────────────────────────────────────────────────────────
-  # ETAPA 4 — Especializada en Infraestructura (Checkov)
-  # ──────────────────────────────────────────────────────────────────────
-  iac:
-    name: "Etapa 4 · Checkov (IaC)"
-    uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-iac-checkov.yml@main
-
-  # ──────────────────────────────────────────────────────────────────────
-  # ETAPA 5 — SAST + Coverage (SonarQube on-prem)
-  # Requiere: secreto SONAR_TOKEN configurado a nivel repo u organización
-  # Runner: self-hosted en la red interna con acceso al SonarQube :9005
+  # ETAPA 7 — SAST + Coverage (SonarQube on-prem)
+  # Requiere: secret SONAR_TOKEN a nivel repo u organización
+  # Runner: self-hosted con visibilidad del servidor SonarQube interno
   # ──────────────────────────────────────────────────────────────────────
   sonarqube:
-    name: "Etapa 5 · SonarQube (SAST + Coverage)"
+    name: "Etapa 7 · SonarQube (SAST + Coverage)"
     uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-sonarqube.yml@main
-    # Inputs opcionales — descomenta si necesitas overrides
     # with:
-    #   sonar-host-url: "http://sonar.miempresa.internal:9005"
+    #   sonar-host-url:    "http://sonar.miempresa.internal:9005"
     #   sonar-project-key: "mi-proyecto-customkey"
-    #   runner-label: "self-hosted"
+    #   runner-label:      "self-hosted"
     #   coverage-threshold: 80
     secrets:
       SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
-  # ──────────────────────────────────────────────────────────────────────
-  # RESUMEN — Step summary visible en la UI de GitHub Actions
-  # ──────────────────────────────────────────────────────────────────────
-  resumen:
-    name: "Resumen de Seguridad"
-    runs-on: ubuntu-latest
-    if: always()
-    needs:
-      - secretos
-      - sast
-      - contenedores
-      - iac
-      - sonarqube
-
-    steps:
-      - name: Generar resumen en GitHub Actions UI
-        run: |
-          STATUS_ICON() {
-            case "$1" in
-              success)  echo "✅" ;;
-              failure)  echo "❌" ;;
-              skipped)  echo "⏭️" ;;
-              *)        echo "⚠️" ;;
-            esac
-          }
-          cat >> $GITHUB_STEP_SUMMARY << EOF
-          ## 🔒 Resumen SSDLC — ${{ github.repository }}
-          | # | Etapa | Herramientas | Estado |
-          |---|-------|-------------|--------|
-          | 1 | Secrets Detection | Gitleaks · TruffleHog | $(STATUS_ICON "${{ needs.secretos.result }}") ${{ needs.secretos.result }} |
-          | 2 | SAST | Semgrep (OWASP Top 10) | $(STATUS_ICON "${{ needs.sast.result }}") ${{ needs.sast.result }} |
-          | 3 | Container Security | KICS · Hadolint · Trivy | $(STATUS_ICON "${{ needs.contenedores.result }}") ${{ needs.contenedores.result }} |
-          | 4 | Infraestructura | Checkov (Terraform) | $(STATUS_ICON "${{ needs.iac.result }}") ${{ needs.iac.result }} |
-          | 5 | SAST + Coverage | SonarQube | $(STATUS_ICON "${{ needs.sonarqube.result }}") ${{ needs.sonarqube.result }} |
-          
-          > 📋 Los reportes HTML detallados están disponibles en la pestaña **Artifacts** de este workflow run.
-          >
-          > 🛡️ **Quality Gate Activo** — Los hallazgos críticos y altos bloquean la integración del código.
-          >
-          > Ejecutado por: **pipelines-centrales** · Equipo Cybersecurity
-          EOF
-
-  # ──────────────────────────────────────────────────────────────────────
-  # ETAPA 5 — Empaquetar y Limpiar Reportes (Consolidación)
-  # ──────────────────────────────────────────────────────────────────────
-  empaquetar-reportes:
-    name: "📦 Consolidar Reportes"
-    needs: [secretos, sast, contenedores, iac, sonarqube]
+  # ══════════════════════════════════════════════════════════════════════
+  # QUALITY GATE CONSOLIDADO — Decide pass/fail aplicando tabla CVSSv3
+  # acumulada entre todas las etapas. Publica:
+  #   - UN comentario sticky en el PR (vía actions/github-script@v8)
+  #   - Step summary con la tabla por etapa + umbrales + top findings
+  #   - Artifact quality-gate-final.json
+  # Falla con exit 1 si los umbrales se exceden.
+  # ══════════════════════════════════════════════════════════════════════
+  quality-gate-consolidated:
+    name: "Quality Gate — Consolidado"
+    needs: [hooks, secretos, sast, sca, iac, contenedores, sonarqube]
     if: always()
     runs-on: ubuntu-latest
-    # Se eleva el permiso LOCALMENTE para poder borrar los artefactos vía API
     permissions:
-      actions: write
+      contents: read
+      pull-requests: write
+      actions: read
+
     steps:
-      - name: Descargar reportes individuales
+      - name: Checkout pipelines-centrales (para el script consolidator)
+        uses: actions/checkout@v4
+        with:
+          repository: DevSecOpsSM/pipelines-centrales
+          ref: main
+          path: .pipelines-centrales
+
+      - name: Descargar qg-summaries de todas las etapas
         uses: actions/download-artifact@v4
         with:
-          pattern: security-*
-          path: Reportes-${{ github.event.repository.name }}
-          merge-multiple: true
+          pattern: qg-summary-*
+          path: qg-summaries/
+          merge-multiple: false
 
-      - name: Subir carpeta unificada
+      - name: Listar summaries descargados
+        run: |
+          echo "=== Summaries descargados ==="
+          find qg-summaries -name "qg-summary-*.json" -type f | sort
+          echo "============================="
+
+      - name: Ejecutar Quality Gate Consolidator
+        id: qg
+        continue-on-error: true
+        env:
+          GH_REPO:   ${{ github.repository }}
+          GH_RUN_ID: ${{ github.run_id }}
+          GH_SHA:    ${{ github.sha }}
+        run: |
+          mkdir -p qg-output
+          python3 .pipelines-centrales/scripts/quality_gate_consolidator.py \
+            --summaries-dir qg-summaries \
+            --repo "$GH_REPO" \
+            --run-id "$GH_RUN_ID" \
+            --sha "$GH_SHA" \
+            --comment-out qg-output/pr-comment.md \
+            --summary-out "$GITHUB_STEP_SUMMARY" \
+            --result-out qg-output/quality-gate-final.json
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Subir quality-gate-final.json
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: Reportes-Seguridad-${{ github.event.repository.name }}
-          path: Reportes-${{ github.event.repository.name }}/
+          name: quality-gate-final
+          path: qg-output/quality-gate-final.json
           retention-days: 30
+          if-no-files-found: warn
 
-      - name: Limpiar artefactos temporales de la interfaz
+      - name: Publicar comentario consolidado en el PR (sticky)
+        if: always() && github.event_name == 'pull_request'
+        uses: actions/github-script@v8
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COMMENT_FILE: qg-output/pr-comment.md
+        with:
+          script: |
+            const fs = require('fs');
+            const marker = '<!-- security-quality-gate -->';
+            const file   = process.env.COMMENT_FILE;
+
+            if (!fs.existsSync(file)) {
+              core.warning(`No se encontró ${file} — saltando publicación del comentario`);
+              return;
+            }
+            const body = fs.readFileSync(file, 'utf8');
+
+            const { owner, repo } = context.repo;
+            const issue_number = context.payload.pull_request.number;
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner, repo, issue_number, per_page: 100,
+            });
+            const previous = comments.find(c => c.body && c.body.includes(marker));
+
+            if (previous) {
+              await github.rest.issues.updateComment({
+                owner, repo, comment_id: previous.id, body,
+              });
+              core.info(`Actualizado comentario sticky #${previous.id}`);
+            } else {
+              await github.rest.issues.createComment({
+                owner, repo, issue_number, body,
+              });
+              core.info('Creado comentario sticky nuevo');
+            }
+
+      - name: Fallar el job si el Quality Gate bloqueó
+        if: always()
         run: |
-          echo "Borrando artefactos individuales para limpiar la interfaz..."
-          ARTIFACTS=$(gh api repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts --jq '.artifacts[] | select(.name | startswith("security-")) | .id')
-          for id in $ARTIFACTS; do
-            gh api repos/${{ github.repository }}/actions/artifacts/$id -X DELETE || true
-          done
-          echo "¡Limpieza completada! Solo queda el paquete consolidado."
+          if [ -f qg-output/quality-gate-final.json ]; then
+            BLOCKED=$(python3 -c "import json; print(json.load(open('qg-output/quality-gate-final.json'))['blocked'])")
+            if [ "$BLOCKED" = "True" ]; then
+              echo "::error title=Quality Gate Blocked::Uno o más umbrales CVSSv3 excedidos. Revisa el comentario del PR o el Step Summary."
+              exit 1
+            fi
+            echo "::notice title=Quality Gate Passed::Ningún umbral excedido"
+            exit 0
+          fi
+          echo "::error title=Quality Gate Error::quality-gate-final.json no fue generado — ¿ningún workflow corrió?"
+          exit 1
