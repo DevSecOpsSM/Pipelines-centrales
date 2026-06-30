@@ -1,0 +1,48 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# .yamllint.yaml — Configuración del linter YAML
+# Tolerante con líneas largas porque los workflows contienen scripts Python
+# embebidos como variables de entorno (PYTHON_SCRIPT, QG_SCRIPT, etc).
+# ═══════════════════════════════════════════════════════════════════════════
+
+extends: default
+
+rules:
+  # Líneas largas permitidas (scripts Python inline llegan a ~250 chars)
+  line-length:
+    max: 250
+    level: warning
+    allow-non-breakable-words: true
+    allow-non-breakable-inline-mappings: true
+
+  # GitHub Actions usa `on:` que yamllint marca como truthy → desactivar
+  truthy:
+    allowed-values: ["true", "false", "on", "off"]
+    check-keys: false
+
+  # Indentación de 2 espacios (estándar GHA)
+  indentation:
+    spaces: 2
+    indent-sequences: true
+    check-multi-line-strings: false
+
+  # Comentarios — relajar el espacio inicial (los headers con ═══ disparan falso positivo)
+  comments:
+    min-spaces-from-content: 1
+    require-starting-space: false
+
+  comments-indentation: disable
+
+  # Documentos múltiples no requieren ---
+  document-start: disable
+
+  # Permitir trailing-newline ausente para que end-of-file-fixer lo arregle
+  empty-lines:
+    max: 2
+    max-start: 0
+    max-end: 1
+
+ignore: |
+  reports/
+  .venv/
+  __pycache__/
+  image/

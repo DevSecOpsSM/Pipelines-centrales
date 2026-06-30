@@ -1,0 +1,50 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# CODEOWNERS — pipelines-centrales
+#
+# Define quién revisa qué. Cualquier PR a este repo requiere aprobación
+# del owner correspondiente antes de mergear.
+#
+# Sintaxis: <pattern> <owner-1> <owner-2> ...
+# Última coincidencia gana; entradas específicas sobrescriben las globales.
+#
+# TODO: cuando se cree el GitHub Team oficial @Simon-Movilidad-Com/security-team,
+#       reemplazar @juanmoya-bit por el handle del team.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Owner global por defecto — cualquier archivo no listado abajo cae aquí
+*                                   @juanmoya-bit
+
+# ─────────────────────────────────────────────────────────────────────────
+# Workflows reutilizables (corazón del repo) — review obligatorio
+# Cambios aquí afectan a los +30 repos consumidores
+# ─────────────────────────────────────────────────────────────────────────
+/.github/workflows/                 @juanmoya-bit
+/.github/workflows/sec-*.yml        @juanmoya-bit
+/.github/workflows/validate-*.yml   @juanmoya-bit
+
+# ─────────────────────────────────────────────────────────────────────────
+# Scripts de soporte
+# ─────────────────────────────────────────────────────────────────────────
+/scripts/                           @juanmoya-bit
+/scripts/ai/                        @juanmoya-bit
+/report-templates/                  @juanmoya-bit
+
+# ─────────────────────────────────────────────────────────────────────────
+# Configuración del repo — review especialmente cuidadoso
+# ─────────────────────────────────────────────────────────────────────────
+/.github/CODEOWNERS                 @juanmoya-bit
+/.github/PULL_REQUEST_TEMPLATE.md   @juanmoya-bit
+/.github/ISSUE_TEMPLATE/            @juanmoya-bit
+/.pre-commit-config.yaml            @juanmoya-bit
+/.yamllint.yaml                     @juanmoya-bit
+/.gitignore                         @juanmoya-bit
+/.gitattributes                     @juanmoya-bit
+
+# ─────────────────────────────────────────────────────────────────────────
+# Documentación
+# ─────────────────────────────────────────────────────────────────────────
+/README.md                          @juanmoya-bit
+/CONTRIBUTING.md                    @juanmoya-bit
+/CHANGELOG.md                       @juanmoya-bit
+/docs/                              @juanmoya-bit
+/examples/                          @juanmoya-bit
