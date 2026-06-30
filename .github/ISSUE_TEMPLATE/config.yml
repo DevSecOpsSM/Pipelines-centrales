@@ -1,0 +1,22 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# Issue chooser config — pipelines-centrales
+# Fuerza a usar las plantillas (no permite issues vacíos) y enlaza a recursos.
+# ═══════════════════════════════════════════════════════════════════════════
+
+blank_issues_enabled: false
+
+contact_links:
+  - name: 🔐 Reportar vulnerabilidad de seguridad
+    url: https://github.com/DevSecOpsSM/pipelines-centrales/security/advisories/new
+    about: |
+      Si encontraste una vulnerabilidad en este repo o en uno de los workflows
+      reutilizables que afecte a los consumidores, NO abras un issue público.
+      Repórtala como Security Advisory (privado) para que el equipo de seguridad
+      la triaje sin exposición.
+
+  - name: 📖 Documentación de adopción
+    url: https://github.com/DevSecOpsSM/pipelines-centrales#readme
+    about: |
+      Antes de abrir un issue, revisa el README — la mayoría de dudas de
+      adopción (cómo invocar un workflow, qué inputs acepta, qué artifacts
+      genera) ya están cubiertas allí.
