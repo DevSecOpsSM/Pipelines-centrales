@@ -848,10 +848,25 @@ jobs:
                 .langs{{display:flex;flex-wrap:wrap;gap:8px}}
                 .lang-chip{{background:rgba(0,241,199,0.08);border:1px solid #00F1C7;color:#00F1C7;padding:5px 12px;border-radius:14px;font-size:12px;font-weight:600}}
                 .footer{{text-align:center;padding:30px;color:#888888;font-size:12px;border-top:1px solid #373737;margin-top:20px}}
+                .btn-pdf{{position:absolute;top:40px;right:40px;background:#00F1C7;color:#000000;font-weight:bold;padding:10px 20px;border:none;border-radius:6px;cursor:pointer;font-size:14px;transition:0.2s}}
+                .btn-pdf:hover{{background:#00c4a0}}
+                @media print{{
+                  @page{{margin:1.5cm;size:auto}}
+                  body{{background:#FFFFFF !important;color:#000000 !important;-webkit-print-color-adjust:exact !important;print-color-adjust:exact !important}}
+                  .header{{background:#FFFFFF !important;border-bottom:2px solid #00F1C7 !important;padding:20px 0}}
+                  .header h1{{color:#000000 !important}}
+                  .btn-pdf{{display:none !important}}
+                  .card,table,.info-box{{background:#FFFFFF !important;border:1px solid #D1D1D1 !important;page-break-inside:avoid}}
+                  td,th{{color:#1A1A1A !important;padding:10px;border-bottom:1px solid #E7E7E7 !important}}
+                  thead{{display:table-header-group;background:#F6F6F6 !important}}
+                  tr{{page-break-inside:avoid}}
+                  .lang-chip{{background:#F6F6F6 !important;color:#333 !important;border:1px solid #CCC !important}}
+                }}
               </style>
             </head>
             <body>
               <div class="header">
+                <button class="btn-pdf" onclick="window.print()">📥 Descargar PDF</button>
                 <div class="logo-container">{logo_h}</div>
                 <span class="tool-badge">SONARQUBE — SAST + COVERAGE</span>
                 <h1>SonarQube Analysis Report</h1>

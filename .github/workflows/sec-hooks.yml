@@ -171,10 +171,23 @@ jobs:
                 .output-box{{background:#000000;border:1px solid #373737;border-radius:8px;padding:24px;overflow-x:auto}}
                 pre{{font-family:'Cascadia Code','Fira Code','Courier New',monospace;font-size:13px;line-height:1.7;color:#D1D1D1;white-space:pre-wrap;word-wrap:break-word}}
                 .footer{{text-align:center;padding:30px;color:#888888;font-size:12px;border-top:1px solid #373737;margin-top:20px}}
+                .btn-pdf{{position:absolute;top:40px;right:40px;background:#00F1C7;color:#000000;font-weight:bold;padding:10px 20px;border:none;border-radius:6px;cursor:pointer;font-size:14px;transition:0.2s}}
+                .btn-pdf:hover{{background:#00c4a0}}
+                @media print{{
+                  @page{{margin:1.5cm;size:auto}}
+                  body{{background:#FFFFFF !important;color:#000000 !important;-webkit-print-color-adjust:exact !important;print-color-adjust:exact !important}}
+                  .header{{background:#FFFFFF !important;border-bottom:2px solid #00F1C7 !important;padding:20px 0}}
+                  .header h1{{color:#000000 !important}}
+                  .btn-pdf{{display:none !important}}
+                  .output-box{{border:1px solid #D1D1D1 !important;background:#FFFFFF !important}}
+                  pre{{color:#1A1A1A !important;white-space:pre-wrap;word-wrap:break-word}}
+                  .info-box{{border:1px solid #FAD900 !important;background:#FFF9E6 !important;color:#333 !important}}
+                }}
               </style>
             </head>
             <body>
               <div class="header">
+                <button class="btn-pdf" onclick="window.print()">📥 Descargar PDF</button>
                 <div class="logo-container">{_logo_h}</div>
                 <span class="tool-badge">PRE-COMMIT HOOKS — KICKS</span>
                 <h1>Pre-commit Security Hooks Report</h1>
