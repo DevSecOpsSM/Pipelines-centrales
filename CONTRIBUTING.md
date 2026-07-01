@@ -9,22 +9,31 @@ estricto y convenciones consistentes con el equipo DevOps.
 ## Modelo de ramas
 
 ```
-                              ┌────────────────────────┐
-   feature/<nombre>     ──┐   │ Producción (consumido  │
-                          ├──▶ develop ──▶ uat ──▶ main │ por todos los repos) │
-   fix/<bug-corto>      ──┘                            └────────────────────────┘
-                          ▲         ▲       ▲
-                          │         │       │
-                  Integración    Staging   Release
+   feature/<nombre>    ─┐
+   fix/<bug>            │
+   chore/<tarea>        │
+   docs/<tema>          ├──▶ develop ──▶ uat ──▶ main
+   refactor/<área>      │    (integ)    (stage)  (prod)
+   perf/<área>          │
+   ci/<cambio>          │
+   test/<área>          │
+   style/<área>        ─┘
 ```
 
 | Rama | Propósito | Recibe PRs desde |
 |------|-----------|------------------|
 | `main` | Lo que los repos consumidores referencian en `@main` o `@vX.Y.Z` | **solo** `uat` |
 | `uat` | Staging — workflows validados antes de pasar a producción | **solo** `develop` |
-| `develop` | Integración continua de features y fixes | **solo** `feature/*` o `fix/*` |
-| `feature/<nombre>` | Desarrollo de una nueva herramienta / workflow / mejora | — |
-| `fix/<bug>` | Corrección de un bug en un workflow existente | — |
+| `develop` | Integración continua | **solo** ramas con prefijo Conventional Commits (ver abajo) |
+| `feature/<nombre>` | Nueva funcionalidad | — |
+| `fix/<bug>` | Corrección de bug | — |
+| `chore/<tarea>` | Mantenimiento (dependencias, config, cleanup) | — |
+| `docs/<tema>` | Solo documentación | — |
+| `refactor/<área>` | Reorganización sin cambio funcional | — |
+| `perf/<área>` | Optimización de tiempo/recursos | — |
+| `ci/<cambio>` | Cambios en CI propia del repo | — |
+| `test/<área>` | Pruebas | — |
+| `style/<área>` | Cambios de formato (whitespace, comillas) | — |
 
 El workflow [`.github/workflows/validate-pr-source.yml`](.github/workflows/validate-pr-source.yml)
 enforce automáticamente este flujo. Un PR con source inválido se rechaza con un

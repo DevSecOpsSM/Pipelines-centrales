@@ -186,10 +186,34 @@ jobs:
                 .no-findings h3{{font-size:20px;color:#4EDA56;margin-bottom:8px}}
                 .no-findings p{{color:#B0B0B0}}
                 .footer{{text-align:center;padding:30px;color:#888888;font-size:12px;border-top:1px solid #373737;margin-top:20px}}
+                .btn-pdf{{position:absolute;top:40px;right:40px;background:#00F1C7;color:#000;font-weight:bold;padding:10px 20px;border:none;border-radius:6px;cursor:pointer;font-size:14px;transition:0.2s}}
+                .btn-pdf:hover{{background:#00c4a0}}
+                @media print{{
+                  @page{{margin:1.5cm;size:auto}}
+                  body{{background:#FFFFFF !important;color:#000000 !important;-webkit-print-color-adjust:exact !important;print-color-adjust:exact !important}}
+                  .header{{background:#FFFFFF !important;border-bottom:2px solid #00F1C7 !important;padding:20px 0}}
+                  .header h1{{color:#000000 !important}}
+                  .btn-pdf{{display:none !important}}
+                  .cards{{padding:15px 0;gap:10px}}
+                  .card{{background:#F6F6F6 !important;border:1px solid #D1D1D1 !important;border-top:4px solid !important;padding:15px;page-break-inside:avoid}}
+                  .num-total,.num-passed,.num-failed{{color:#1A1A1A !important}}
+                  .wrap{{border:1px solid #D1D1D1 !important;background:#FFFFFF !important}}
+                  table{{table-layout:fixed;width:100%}}
+                  thead{{display:table-header-group;background:#F6F6F6 !important}}
+                  tr{{page-break-inside:avoid;page-break-after:auto}}
+                  td{{border-bottom:1px solid #E7E7E7 !important;color:#1A1A1A !important;padding:10px;vertical-align:middle}}
+                  th{{color:#373737 !important;border-bottom:2px solid #D1D1D1 !important;padding:10px}}
+                  .badge{{border:none !important;padding:4px 8px;font-size:10px}}
+                  .badge-critical{{background:#F63D3D !important;color:#FFFFFF !important}}
+                  .badge-high{{background:#FAD900 !important;color:#000000 !important}}
+                  .badge-medium{{background:#00F1C7 !important;color:#000000 !important}}
+                  .rule{{background:#E7E7E7 !important;color:#000 !important;border:1px solid #CCC !important}}
+                }}
               </style>
             </head>
             <body>
               <div class="header">
+                <button class="btn-pdf" onclick="window.print()">📥 Descargar PDF</button>
                 <div class="logo-container">{_logo}</div>
                 <span class="tool-badge">CHECKOV — IaC SECURITY</span>
                 <h1>Terraform Security Report</h1>

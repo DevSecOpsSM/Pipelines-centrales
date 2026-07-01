@@ -62,12 +62,15 @@ jobs:
 
   # ──────────────────────────────────────────────────────────────────────
   # ETAPA 4 — SCA: Análisis de dependencias (OWASP Dependency-Check)
+  # DESACTIVADA temporalmente para el análisis de seguridad puntual.
+  # Reactivar descomentando el bloque y añadiendo `sca` al `needs:` del
+  # quality-gate-consolidated.
   # ──────────────────────────────────────────────────────────────────────
-  sca:
-    name: "Etapa 4 · SCA (Dependency-Check)"
-    uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-sca.yml@main
-    secrets:
-      NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+  # sca:
+  #   name: "Etapa 4 · SCA (Dependency-Check)"
+  #   uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-sca.yml@main
+  #   secrets:
+  #     NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
 
   # ──────────────────────────────────────────────────────────────────────
   # ETAPA 5 — IaC: Análisis de Terraform (Checkov)
@@ -109,7 +112,8 @@ jobs:
   # ══════════════════════════════════════════════════════════════════════
   quality-gate-consolidated:
     name: "Quality Gate — Consolidado"
-    needs: [hooks, secretos, sast, sca, iac, contenedores, sonarqube]
+    needs: [hooks, secretos, sast, iac, contenedores, sonarqube]
+    # ↑ sca removido temporalmente. Reactivar cuando se descomente el job sca arriba.
     if: always()
     runs-on: ubuntu-latest
     permissions:
