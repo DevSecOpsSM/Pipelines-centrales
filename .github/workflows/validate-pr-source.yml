@@ -3,14 +3,22 @@
 #
 # Modelo de ramas estricto:
 #
-#       feature/* ─┐         (cualquier desarrollo nuevo)
-#       fix/*     ─┴──▶ develop ──▶ uat ──▶ main
-#                       (integración) (staging) (producción)
+#       feature/*  ─┐
+#       fix/*       │
+#       chore/*     │
+#       docs/*      ├──▶ develop ──▶ uat ──▶ main
+#       refactor/*  │    (integ)    (stage)  (prod)
+#       perf/*      │
+#       ci/*        │
+#       test/*      │
+#       style/*    ─┘
 #
 # Reglas que se aplican:
 #   • PR a `main`     ⇒ SOLO desde `uat`
 #   • PR a `uat`      ⇒ SOLO desde `develop`
-#   • PR a `develop`  ⇒ SOLO desde `feature/*` o `fix/*`
+#   • PR a `develop`  ⇒ SOLO desde prefijos de Conventional Commits:
+#                       feature/*, fix/*, chore/*, docs/*, refactor/*,
+#                       perf/*, ci/*, test/*, style/*
 #   • Cualquier otra combinación ⇒ FALLA con mensaje explicativo
 #
 # Este workflow es disparado por GitHub en cada PR a las ramas protegidas.
@@ -69,12 +77,16 @@ jobs:
               fi
               ;;
             develop)
+              # Aceptamos todos los prefijos de Conventional Commits como ramas source
+              # válidas contra develop. Esto cubre feature/fix + tareas cotidianas
+              # (chore, docs, refactor, perf, ci, test) sin que el enforce se convierta
+              # en fricción para trabajo no-feature.
               case "$SOURCE" in
-                feature/*|fix/*)
+                feature/*|fix/*|chore/*|docs/*|refactor/*|perf/*|ci/*|test/*|style/*)
                   VALID=true
                   ;;
                 *)
-                  REASON="PR a 'develop' solo se permite desde 'feature/*' o 'fix/*'. Recibido: '$SOURCE'."
+                  REASON="PR a 'develop' requiere una rama con prefijo Conventional Commits: 'feature/', 'fix/', 'chore/', 'docs/', 'refactor/', 'perf/', 'ci/', 'test/' o 'style/'. Recibido: '$SOURCE'."
                   ;;
               esac
               ;;
@@ -138,8 +150,13 @@ jobs:
               echo "### Modelo de ramas válido"
               echo ""
               echo '```'
-              echo 'feature/*  ─┐'
-              echo 'fix/*      ─┴──▶ develop ──▶ uat ──▶ main'
+              echo 'feature/*   ─┐'
+              echo 'fix/*        │'
+              echo 'chore/*      │'
+              echo 'docs/*       ├──▶ develop ──▶ uat ──▶ main'
+              echo 'refactor/*   │'
+              echo 'perf/*  ci/* │'
+              echo 'test/*  style/*┘'
               echo '```'
               echo ""
               echo "Ajusta la rama origen del PR o redirige a la rama destino correcta."
@@ -168,8 +185,13 @@ jobs:
               '',
               '### Modelo de ramas válido',
               '```',
-              'feature/*  ─┐',
-              'fix/*      ─┴──▶ develop ──▶ uat ──▶ main',
+              'feature/*   ─┐',
+              'fix/*        │',
+              'chore/*      │',
+              'docs/*       ├──▶ develop ──▶ uat ──▶ main',
+              'refactor/*   │',
+              'perf/*  ci/* │',
+              'test/*  style/*┘',
               '```',
               '',
               '_Ajusta la rama origen del PR o redirige a la rama destino correcta._',
