@@ -2,8 +2,9 @@
 # .gitignore — Pipelines-centrales
 # ═══════════════════════════════════════════════════════════════════════════
 
-# Documentación interna de Claude (no versionada)
+# Claude Code — configuración y documentación interna (no versionadas)
 Claude.md
+.claude/
 
 # Reportes generados localmente por los workflows
 reports/
