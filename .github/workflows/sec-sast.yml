@@ -39,10 +39,31 @@ jobs:
       - name: Ejecutar Semgrep — OWASP Top 10 + Secrets + CI
         continue-on-error: true
         run: |
+          # Excluir paths que NO son código de aplicación:
+          #   - .github/       CI/CD workflows (analizado por sec-containers/KICS aparte)
+          #   - .git/          internals de git
+          #   - .pipelines-centrales/  checkout del repo central (workflows del consumer)
+          #   - node_modules/, vendor/  dependencias (analizadas por sec-sca)
+          #   - .venv/, venv/  entornos virtuales Python
+          #   - dist/, build/, target/  outputs de build
+          #   - reports/       nuestros propios reportes (evita bucles)
           semgrep scan \
             --config p/owasp-top-ten \
             --config p/secrets \
             --config p/ci \
+            --exclude=.github \
+            --exclude=.git \
+            --exclude=.pipelines-centrales \
+            --exclude=node_modules \
+            --exclude=vendor \
+            --exclude=.venv \
+            --exclude=venv \
+            --exclude=dist \
+            --exclude=build \
+            --exclude=target \
+            --exclude=reports \
+            --exclude='*.min.js' \
+            --exclude='*.min.css' \
             --json \
             --output reports/semgrep-raw.json \
             --timeout 300 \
