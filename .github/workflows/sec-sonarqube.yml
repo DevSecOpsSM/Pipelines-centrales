@@ -1065,12 +1065,17 @@ jobs:
             print(f"[qg-summary] sec-sonarqube → {counts} blocked={blocked} qg_native={qg_native_status}")
         run: python3 -c "$PYTHON_SCRIPT"
 
-      - name: Subir reporte HTML
+      - name: Subir reporte HTML + JSONs raw de SonarQube
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: security-sonarqube-report
-          path: reports/${{ github.event.repository.name }}/sonarqube-report.html
+          path: |
+            reports/${{ github.event.repository.name }}/sonarqube-report.html
+            reports/sonar-issues.json
+            reports/sonar-hotspots.json
+            reports/sonar-qg.json
+            reports/sonar-measures.json
           retention-days: 30
           if-no-files-found: warn
 

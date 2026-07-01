@@ -339,12 +339,14 @@ jobs:
             print(f"[qg-summary] sec-iac-terraform → {counts} blocked={blocked} status={scan_status}")
         run: python3 -c "$PYTHON_SCRIPT"
 
-      - name: Subir reporte HTML
+      - name: Subir reporte HTML + JSON raw
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: security-iac-checkov
-          path: reports/${{ github.event.repository.name }}/checkov-report.html
+          path: |
+            reports/${{ github.event.repository.name }}/checkov-report.html
+            reports/checkov-raw.json
           retention-days: 30
           if-no-files-found: warn
 
