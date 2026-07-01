@@ -1,0 +1,399 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# ANALYSIS MODE — Workflow consumidor para análisis de seguridad puntual
+#
+# TEMPORAL: apunta a @develop porque main aún no tiene Fase 2 + Analysis Mode.
+# Al cerrar la fase de análisis y revertir analysis-mode en pipelines-centrales,
+# reemplazar `@develop` por `@main` (o `@v1.0.0` con release SemVer).
+#
+# Universal — funciona en cualquier repositorio sin importar el lenguaje.
+# Las herramientas detectan el stack automáticamente:
+#   - Gitleaks: escanea el historial git completo (agnóstico)
+#   - Semgrep:  p/owasp-top-ten cubre Python, JS/TS, Java, Go, PHP, Ruby, C/C++,
+#               Kotlin, Swift, Rust, C#, HCL, Bash, etc.
+#   - Checkov:  solo actúa si hay .tf; skipped si no hay Terraform
+#   - KICS:     Dockerfiles, K8s, Terraform, Ansible, Helm, CloudFormation
+#   - Hadolint: solo si hay Dockerfile
+#   - Trivy:    filesystem + imagen Docker (si hay Dockerfile)
+#   - SonarQube: Python/Node/Java/Go/.NET/Ruby con detección automática
+#
+# Dependency-Check (SCA) está DESACTIVADO en esta fase por decisión operativa.
+# Reactivación: descomentar el job sca + añadir `sca` al needs del gate.
+#
+# Pre-requisitos organizacionales (una sola vez en la org donde vive el repo):
+#   1. pipelines-centrales con visibility = Internal
+#   2. Settings → Actions → Allow reusable workflows
+#   3. (Si usan SonarQube) Secret SONAR_TOKEN por-repo u organizacional
+# ═══════════════════════════════════════════════════════════════════════════
+
+name: Seguridad SSDLC
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+      - master
+  pull_request:
+    branches:
+      - main
+      - develop
+      - master
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: write    # quality-gate-consolidated necesita comentar en PRs
+  issues: write           # reservado (DEPRECATED — canal nuevo es el comentario)
+
+jobs:
+
+  # ──────────────────────────────────────────────────────────────────────
+  # ETAPA 1 — Pre-commit Hooks
+  # Si el repo no tiene .pre-commit-config.yaml → status="skipped" (no bloquea)
+  # ──────────────────────────────────────────────────────────────────────
+  hooks:
+    name: "Etapa 1 · Pre-commit Hooks"
+    uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-hooks.yml@develop
+
+  # ──────────────────────────────────────────────────────────────────────
+  # ETAPA 2 — Detección de secretos (Gitleaks · historial completo)
+  # ──────────────────────────────────────────────────────────────────────
+  secretos:
+    name: "Etapa 2 · Secrets Scan"
+    uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-secrets.yml@develop
+
+  # ──────────────────────────────────────────────────────────────────────
+  # ETAPA 3 — SAST universal (Semgrep · OWASP Top 10 + Secrets + CI rules)
+  # ──────────────────────────────────────────────────────────────────────
+  sast:
+    name: "Etapa 3 · SAST (Semgrep)"
+    uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-sast.yml@develop
+
+  # ──────────────────────────────────────────────────────────────────────
+  # ETAPA 4 — SCA (Dependency-Check) — DESACTIVADA en esta fase
+  # Reactivar cuando corresponda:
+  # ──────────────────────────────────────────────────────────────────────
+  # sca:
+  #   name: "Etapa 4 · SCA (Dependency-Check)"
+  #   uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-sca.yml@develop
+  #   secrets:
+  #     NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+
+  # ──────────────────────────────────────────────────────────────────────
+  # ETAPA 5 — IaC (Checkov · Terraform)
+  # Repo sin .tf → skipped, no bloquea
+  # ──────────────────────────────────────────────────────────────────────
+  iac:
+    name: "Etapa 5 · IaC (Checkov)"
+    uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-iac-terraform.yml@develop
+
+  # ──────────────────────────────────────────────────────────────────────
+  # ETAPA 6 — Container Security (KICS + Hadolint + Trivy)
+  # Sin Dockerfile → Hadolint reporta skipped, Trivy solo hace fs
+  # ──────────────────────────────────────────────────────────────────────
+  contenedores:
+    name: "Etapa 6 · Container Security"
+    uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-containers.yml@develop
+
+  # ──────────────────────────────────────────────────────────────────────
+  # ETAPA 7 — SonarQube (SAST + Coverage) — desactivable
+  # Requiere SONAR_TOKEN configurado como secret + servidor alcanzable.
+  # Descomentar cuando esté disponible:
+  # ──────────────────────────────────────────────────────────────────────
+  # sonarqube:
+  #   name: "Etapa 7 · SonarQube (SAST + Coverage)"
+  #   uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-sonarqube.yml@develop
+  #   secrets:
+  #     SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+  # ══════════════════════════════════════════════════════════════════════
+  # QUALITY GATE CONSOLIDADO
+  # Aplica tabla CVSSv3 acumulada entre TODAS las etapas activas:
+  #   Critical/High/Medium > 0 → bloquea
+  #   Low > 20                 → bloquea
+  #   Info > 50                → bloquea
+  # Publica: comentario sticky en PR + step summary + artifact JSON.
+  # ══════════════════════════════════════════════════════════════════════
+  quality-gate-consolidated:
+    name: "Quality Gate — Consolidado"
+    needs: [hooks, secretos, sast, iac, contenedores]
+    # ↑ Al reactivar sca/sonarqube arriba, añadirlos también aquí.
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      actions: read
+
+    steps:
+      - name: Checkout pipelines-centrales (script consolidator)
+        uses: actions/checkout@v4
+        with:
+          repository: DevSecOpsSM/pipelines-centrales
+          ref: develop
+          path: .pipelines-centrales
+
+      - name: Descargar qg-summaries de todas las etapas
+        uses: actions/download-artifact@v4
+        with:
+          pattern: qg-summary-*
+          path: qg-summaries/
+          merge-multiple: false
+
+      - name: Listar summaries descargados
+        run: |
+          echo "=== Summaries descargados ==="
+          find qg-summaries -name "qg-summary-*.json" -type f | sort
+          echo "============================="
+
+      - name: Ejecutar Quality Gate Consolidator
+        id: qg
+        continue-on-error: true
+        env:
+          GH_REPO:   ${{ github.repository }}
+          GH_RUN_ID: ${{ github.run_id }}
+          GH_SHA:    ${{ github.sha }}
+        run: |
+          mkdir -p qg-output
+          python3 .pipelines-centrales/scripts/quality_gate_consolidator.py \
+            --summaries-dir qg-summaries \
+            --repo "$GH_REPO" \
+            --run-id "$GH_RUN_ID" \
+            --sha "$GH_SHA" \
+            --comment-out qg-output/pr-comment.md \
+            --summary-out "$GITHUB_STEP_SUMMARY" \
+            --result-out qg-output/quality-gate-final.json
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Subir quality-gate-final.json
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: quality-gate-final
+          path: qg-output/quality-gate-final.json
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Publicar comentario consolidado en el PR (sticky)
+        if: always() && github.event_name == 'pull_request'
+        uses: actions/github-script@v8
+        env:
+          COMMENT_FILE: qg-output/pr-comment.md
+        with:
+          script: |
+            const fs = require('fs');
+            const marker = '<!-- security-quality-gate -->';
+            const file   = process.env.COMMENT_FILE;
+
+            if (!fs.existsSync(file)) {
+              core.warning(`No se encontró ${file} — saltando publicación del comentario`);
+              return;
+            }
+            const body = fs.readFileSync(file, 'utf8');
+
+            const { owner, repo } = context.repo;
+            const issue_number = context.payload.pull_request.number;
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner, repo, issue_number, per_page: 100,
+            });
+            const previous = comments.find(c => c.body && c.body.includes(marker));
+
+            if (previous) {
+              await github.rest.issues.updateComment({
+                owner, repo, comment_id: previous.id, body,
+              });
+              core.info(`Actualizado comentario sticky #${previous.id}`);
+            } else {
+              await github.rest.issues.createComment({
+                owner, repo, issue_number, body,
+              });
+              core.info('Creado comentario sticky nuevo');
+            }
+
+      - name: Fallar el job si el Quality Gate bloqueó
+        if: always()
+        run: |
+          if [ -f qg-output/quality-gate-final.json ]; then
+            BLOCKED=$(python3 -c "import json; print(json.load(open('qg-output/quality-gate-final.json'))['blocked'])")
+            if [ "$BLOCKED" = "True" ]; then
+              echo "::error title=Quality Gate Blocked::Uno o más umbrales CVSSv3 excedidos. Revisa el comentario del PR o el Step Summary."
+              exit 1
+            fi
+            echo "::notice title=Quality Gate Passed::Ningún umbral excedido"
+            exit 0
+          fi
+          echo "::error title=Quality Gate Error::quality-gate-final.json no fue generado — ¿ningún workflow corrió?"
+          exit 1
+
+  # ══════════════════════════════════════════════════════════════════════
+  # CONSOLIDATE ARTIFACTS — Genera PDFs + ZIP único con todo el entregable
+  # ══════════════════════════════════════════════════════════════════════
+  # Corre después del Quality Gate. Descarga TODOS los artifacts, ejecuta
+  # el batch_generate_reports.py de pipelines-centrales para producir:
+  #   - PDFs individuales por herramienta (Gitleaks, Semgrep, Checkov, KICS,
+  #     Hadolint, Trivy, SonarQube, OWASP DC)
+  #   - PDF ejecutivo consolidado (portada + tabla CVSSv3 + SLAs)
+  #   - batch-manifest.json (resumen máquina-legible)
+  #
+  # Todo esto se empaqueta en UN ZIP y se sube como artifact único
+  # `security-analysis-report`. Los artifacts individuales quedan como
+  # intermedios (podríamos borrarlos vía API — ver step opcional al final).
+  # ══════════════════════════════════════════════════════════════════════
+  consolidate-artifacts:
+    name: "Consolidar reportes en ZIP entregable"
+    needs: [quality-gate-consolidated]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write   # necesario para borrar artifacts individuales al final
+
+    steps:
+      - name: Checkout pipelines-centrales (report-templates + batch script)
+        uses: actions/checkout@v4
+        with:
+          repository: DevSecOpsSM/pipelines-centrales
+          ref: develop
+          path: .pipelines-centrales
+
+      - name: Descargar TODOS los artifacts del run
+        uses: actions/download-artifact@v4
+        with:
+          path: all-artifacts/
+          merge-multiple: false
+
+      - name: Preparar directorio de JSONs raw para el batch
+        run: |
+          set -e
+          mkdir -p raw-jsons
+          # Recolectar JSONs raw de los artifacts descargados.
+          # Los nombres de archivo esperados por batch_generate_reports.py:
+          #   gitleaks-raw.json · semgrep-raw.json · dependency-check-report.json
+          #   checkov-raw.json · kics-results.json · hadolint-raw.json
+          #   trivy-raw.json · sonar-issues.json
+          find all-artifacts -name "gitleaks-raw.json"            -exec cp {} raw-jsons/ \; 2>/dev/null || true
+          find all-artifacts -name "semgrep-raw.json"             -exec cp {} raw-jsons/ \; 2>/dev/null || true
+          find all-artifacts -name "dependency-check-report.json" -exec cp {} raw-jsons/ \; 2>/dev/null || true
+          find all-artifacts -name "checkov-raw.json"             -exec cp {} raw-jsons/ \; 2>/dev/null || true
+          find all-artifacts -name "kics-results.json"            -exec cp {} raw-jsons/ \; 2>/dev/null || true
+          find all-artifacts -name "hadolint-raw.json"            -exec cp {} raw-jsons/ \; 2>/dev/null || true
+          find all-artifacts -name "trivy-raw.json"               -exec cp {} raw-jsons/ \; 2>/dev/null || true
+          find all-artifacts -name "sonar-issues.json"            -exec cp {} raw-jsons/ \; 2>/dev/null || true
+
+          echo "=== JSONs recolectados para el batch ==="
+          ls -la raw-jsons/ 2>/dev/null || echo "(vacío)"
+
+      - name: Instalar reportlab
+        run: pip install --quiet reportlab
+
+      - name: Ejecutar batch_generate_reports.py
+        run: |
+          mkdir -p pdfs
+          python3 .pipelines-centrales/report-templates/batch_generate_reports.py \
+            --input-dir  raw-jsons \
+            --output-dir pdfs \
+            --repo       "${{ github.repository }}" \
+            --sha        "${{ github.sha }}"
+
+          echo ""
+          echo "=== PDFs generados ==="
+          ls -la pdfs/
+
+      - name: Preparar bundle final (PDFs + HTMLs + JSONs + qg-summary)
+        run: |
+          set -e
+          BUNDLE_DIR="security-analysis-${{ github.event.repository.name }}"
+          mkdir -p "$BUNDLE_DIR"/{01-pdf-ejecutivo,02-pdf-individuales,03-html-reports,04-raw-json,05-qg-summary}
+
+          # 1. PDFs individuales + ejecutivo
+          if [ -f pdfs/01-executive-summary.pdf ]; then
+            cp pdfs/01-executive-summary.pdf "$BUNDLE_DIR/01-pdf-ejecutivo/"
+          fi
+          find pdfs -name "0[2-9]-*.pdf" -exec cp {} "$BUNDLE_DIR/02-pdf-individuales/" \; 2>/dev/null || true
+
+          # 2. HTMLs de todos los reportes
+          find all-artifacts -name "*.html" -exec cp {} "$BUNDLE_DIR/03-html-reports/" \; 2>/dev/null || true
+
+          # 3. Raw JSONs
+          cp -r raw-jsons/* "$BUNDLE_DIR/04-raw-json/" 2>/dev/null || true
+
+          # 4. qg-summaries + veredicto final
+          find all-artifacts -name "qg-summary-*.json" -exec cp {} "$BUNDLE_DIR/05-qg-summary/" \; 2>/dev/null || true
+          find all-artifacts -name "quality-gate-final.json" -exec cp {} "$BUNDLE_DIR/05-qg-summary/" \; 2>/dev/null || true
+
+          # 5. batch-manifest en la raíz del bundle
+          if [ -f pdfs/batch-manifest.json ]; then
+            cp pdfs/batch-manifest.json "$BUNDLE_DIR/"
+          fi
+
+          # 6. README dentro del ZIP con la estructura
+          cat > "$BUNDLE_DIR/README.md" <<EOF
+          # Análisis SSDLC — ${{ github.repository }}
+
+          **Commit:** \`${{ github.sha }}\`
+          **Ejecutado:** $(date -u '+%Y-%m-%d %H:%M UTC')
+
+          ## Estructura del entregable
+
+          - \`01-pdf-ejecutivo/\` — PDF consolidado para stakeholders (portada, veredicto CVSSv3, SLAs)
+          - \`02-pdf-individuales/\` — PDF detallado por herramienta con hallazgos + evidencia
+          - \`03-html-reports/\` — Reportes HTML interactivos (versión web original con botón PDF)
+          - \`04-raw-json/\` — Outputs crudos de cada herramienta (auditoría y forensics)
+          - \`05-qg-summary/\` — Sumarios normalizados CVSSv3 + veredicto del Quality Gate
+
+          ## Metodología
+
+          - OWASP Top 10 (Semgrep, KICS)
+          - CVSSv3 Base Score (todas las CVE-related)
+          - SLAs institucionales: Critical 24h · High 7d · Medium 30d · Low 90d
+
+          Consulta \`batch-manifest.json\` para la vista máquina-legible.
+          EOF
+
+          # Crear el ZIP
+          zip -r "$BUNDLE_DIR.zip" "$BUNDLE_DIR" -q
+          echo "=== ZIP consolidado ==="
+          ls -la "$BUNDLE_DIR.zip"
+          du -sh "$BUNDLE_DIR"
+
+      - name: Subir ZIP consolidado como artifact único
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-analysis-report
+          path: security-analysis-${{ github.event.repository.name }}.zip
+          retention-days: 30
+          if-no-files-found: warn
+
+      # ────────────────────────────────────────────────────────────────────
+      # Limpiar los artifacts individuales del run
+      # ────────────────────────────────────────────────────────────────────
+      - name: Borrar artifacts individuales (dejar solo el ZIP consolidado)
+        if: always()
+        continue-on-error: true
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const KEEP = new Set(['security-analysis-report']);
+            const { owner, repo } = context.repo;
+            const run_id = context.runId;
+
+            const { data } = await github.rest.actions.listWorkflowRunArtifacts({
+              owner, repo, run_id, per_page: 100,
+            });
+
+            for (const art of data.artifacts) {
+              if (KEEP.has(art.name)) {
+                core.info(`Conservado: ${art.name}`);
+                continue;
+              }
+              try {
+                await github.rest.actions.deleteArtifact({
+                  owner, repo, artifact_id: art.id,
+                });
+                core.info(`Borrado: ${art.name} (id=${art.id})`);
+              } catch (e) {
+                core.warning(`No pude borrar ${art.name}: ${e.message}`);
+              }
+            }

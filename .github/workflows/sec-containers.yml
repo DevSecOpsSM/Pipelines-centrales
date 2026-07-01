@@ -280,12 +280,14 @@ jobs:
           pip install deep-translator --quiet 2>/dev/null || true
           python3 -c "$PYTHON_SCRIPT"
 
-      - name: Subir reporte KICS HTML
+      - name: Subir reporte KICS HTML + JSON raw
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: security-containers-kics
-          path: reports/${{ github.event.repository.name }}/kics-report.html
+          path: |
+            reports/${{ github.event.repository.name }}/kics-report.html
+            kics-output/kics-results.json
           retention-days: 30
           if-no-files-found: warn
 
@@ -599,12 +601,14 @@ jobs:
           pip install deep-translator --quiet 2>/dev/null || true
           python3 -c "$PYTHON_SCRIPT"
 
-      - name: Subir reporte Hadolint HTML
+      - name: Subir reporte Hadolint HTML + JSON raw
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: security-containers-hadolint
-          path: reports/${{ github.event.repository.name }}/hadolint-report.html
+          path: |
+            reports/${{ github.event.repository.name }}/hadolint-report.html
+            reports/hadolint-raw.json
           retention-days: 30
           if-no-files-found: warn
 
@@ -903,7 +907,7 @@ jobs:
         continue-on-error: true
         run: trivy fs . --format json --output reports/trivy-raw.json || true
 
-      - name: Subir reportes Trivy HTML
+      - name: Subir reportes Trivy HTML + JSON raw
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -911,6 +915,7 @@ jobs:
           path: |
             reports/${{ github.event.repository.name }}/trivy-fs-report.html
             reports/${{ github.event.repository.name }}/trivy-image-report.html
+            reports/trivy-raw.json
           retention-days: 30
           if-no-files-found: warn
 
