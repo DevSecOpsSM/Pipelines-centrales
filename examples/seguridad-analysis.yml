@@ -367,9 +367,10 @@ jobs:
           if-no-files-found: warn
 
       # ────────────────────────────────────────────────────────────────────
-      # Limpiar los artifacts individuales del run
+      # Limpiar los artifacts individuales SOLO si el ZIP fue creado con éxito
+      # (protege el debugging cuando el batch falla)
       # ────────────────────────────────────────────────────────────────────
-      - name: Borrar artifacts individuales (dejar solo el ZIP consolidado)
+      - name: Borrar artifacts individuales (solo si el ZIP fue creado)
         if: always()
         continue-on-error: true
         uses: actions/github-script@v8
@@ -382,6 +383,16 @@ jobs:
             const { data } = await github.rest.actions.listWorkflowRunArtifacts({
               owner, repo, run_id, per_page: 100,
             });
+
+            // Verificar que el ZIP consolidado fue creado exitosamente.
+            const zipExists = data.artifacts.some(a => a.name === 'security-analysis-report');
+            if (!zipExists) {
+              core.warning(
+                '`security-analysis-report` NO fue creado en este run — ' +
+                'se conservan los artifacts individuales para permitir debugging.'
+              );
+              return;
+            }
 
             for (const art of data.artifacts) {
               if (KEEP.has(art.name)) {
