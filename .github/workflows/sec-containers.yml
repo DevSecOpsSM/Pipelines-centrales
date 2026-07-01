@@ -23,7 +23,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      issues: write
  
 
     steps:
@@ -37,7 +36,12 @@ jobs:
         continue-on-error: true
         run: |
           mkdir -p kics-output
-          # Quitamos el 'tail -5' para poder ver los logs reales si algo falla.
+          # Excluir paths que NO son IaC de la app:
+          #   - .github/               workflows del pipeline SSDLC (falsos positivos)
+          #   - .git/                  internals
+          #   - kics-output/           nuestro propio output (evita bucles)
+          #   - .pipelines-centrales/  checkout auxiliar del consumer
+          #   - node_modules/, vendor/ dependencias
           docker run --rm \
             -v "$PWD:/path" \
             checkmarx/kics:latest \
@@ -47,7 +51,7 @@ jobs:
             --output-path /path/kics-output \
             --output-name kics-results \
             --ignore-on-exit results \
-            --exclude-paths /path/kics-output,/path/.git \
+            --exclude-paths /path/kics-output,/path/.git,/path/.github,/path/.pipelines-centrales,/path/node_modules,/path/vendor \
             || true
 
           # Garantizar archivo JSON válido si KICS falló críticamente
@@ -629,7 +633,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      issues: write
 
     steps:
       - name: Checkout repositorio
