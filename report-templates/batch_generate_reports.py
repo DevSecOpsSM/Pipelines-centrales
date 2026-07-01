@@ -389,8 +389,12 @@ class ExecutiveSummaryPDF:
         width, height = letter
 
         if self.logo_path.exists():
-            canvas.drawImage(str(self.logo_path), 40, height - 70, width=140, height=40,
-                             preserveAspectRatio=True, mask='auto')
+            try:
+                canvas.drawImage(str(self.logo_path), 40, height - 70, width=140, height=40,
+                                 preserveAspectRatio=True, mask='auto')
+            except Exception as exc:
+                # Logo corrupto o no reconocible como imagen — continuar sin él
+                print(f"[WARN] Logo no cargable ({exc}) — continuando sin logo", file=sys.stderr)
 
         data = [
             ['Código:', self.test_type],
@@ -668,6 +672,11 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
 
+    # CRÍTICO: resolver a paths absolutos porque los subprocess corren con
+    # cwd=SCRIPT_DIR y perderían la referencia con paths relativos.
+    args.input_dir  = args.input_dir.resolve()
+    args.output_dir = args.output_dir.resolve()
+
     if not args.input_dir.exists():
         print(f"[ERROR] input-dir no existe: {args.input_dir}", file=sys.stderr)
         return 2
@@ -677,6 +686,10 @@ def main() -> int:
     print(f"[batch] Input:  {args.input_dir}")
     print(f"[batch] Output: {args.output_dir}")
     print(f"[batch] Repo:   {args.repo}")
+    print(f"[batch] JSONs disponibles en input-dir:")
+    for p in sorted(args.input_dir.iterdir()):
+        if p.is_file():
+            print(f"          · {p.name} ({p.stat().st_size} bytes)")
     print()
 
     # 1. Generar PDFs individuales por herramienta
