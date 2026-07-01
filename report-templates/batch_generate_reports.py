@@ -260,6 +260,37 @@ COUNTERS: dict[str, Callable] = {
 # Orquestación: correr cada generator individual
 # ═══════════════════════════════════════════════════════════════════════════
 
+def resolve_logo_path(logo_arg: str) -> str:
+    """
+    Localiza el logo en varios sitios canónicos y devuelve su path ABSOLUTO.
+
+    Orden de búsqueda:
+      1. Si `logo_arg` es un path absoluto y existe, se usa tal cual
+      2. `<report-templates>/<logo_arg>`      (compat con el uso original)
+      3. `<repo-root>/image/<logo_arg>`       (nueva convención del proyecto)
+      4. Si no se encuentra, se devuelve el nombre tal cual y los generators
+         mostrarán la advertencia estándar "logo no encontrado" (no falla).
+    """
+    p = Path(logo_arg)
+    if p.is_absolute() and p.exists():
+        return str(p)
+
+    candidates = [
+        SCRIPT_DIR / logo_arg,                   # report-templates/<logo>
+        SCRIPT_DIR.parent / "image" / logo_arg,  # <repo-root>/image/<logo>
+    ]
+    for c in candidates:
+        if c.exists():
+            resolved = str(c.resolve())
+            print(f"[batch] Logo encontrado: {resolved}")
+            return resolved
+
+    print(f"[batch] Logo '{logo_arg}' NO encontrado en {SCRIPT_DIR} ni "
+          f"{SCRIPT_DIR.parent / 'image'} — los PDFs se generarán sin logo",
+          file=sys.stderr)
+    return logo_arg   # el generator mostrará su warning y continuará
+
+
 def run_individual_generators(
     input_dir: Path,
     output_dir: Path,
@@ -350,7 +381,10 @@ class ExecutiveSummaryPDF:
         self.repo = repo
         self.sha = (sha or "")[:7]
 
-        self.logo_path = SCRIPT_DIR / logo_filename
+        # logo_filename puede ser un nombre relativo (compat) o un path absoluto
+        # ya resuelto por resolve_logo_path(). Si es absoluto se usa tal cual.
+        _p = Path(logo_filename)
+        self.logo_path = _p if _p.is_absolute() else (SCRIPT_DIR / logo_filename)
         self.test_type = "DevSecOps-Ejecutivo"
 
         self.totals = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
@@ -683,9 +717,15 @@ def main() -> int:
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Resolver el logo a un path ABSOLUTO antes de propagarlo a los subprocess
+    # y al ExecutiveSummaryPDF (los generators funcionan con nombre o con path
+    # absoluto porque os.path.join respeta absolutos).
+    logo_resolved = resolve_logo_path(args.logo)
+
     print(f"[batch] Input:  {args.input_dir}")
     print(f"[batch] Output: {args.output_dir}")
     print(f"[batch] Repo:   {args.repo}")
+    print(f"[batch] Logo:   {logo_resolved}")
     print(f"[batch] JSONs disponibles en input-dir:")
     for p in sorted(args.input_dir.iterdir()):
         if p.is_file():
@@ -693,7 +733,7 @@ def main() -> int:
     print()
 
     # 1. Generar PDFs individuales por herramienta
-    results = run_individual_generators(args.input_dir, args.output_dir, args.logo)
+    results = run_individual_generators(args.input_dir, args.output_dir, logo_resolved)
 
     print("\n[batch] Resumen de generación individual:")
     for r in results:
@@ -708,7 +748,7 @@ def main() -> int:
         output_path=executive_path,
         repo=args.repo,
         sha=args.sha,
-        logo_filename=args.logo,
+        logo_filename=logo_resolved,
     )
     try:
         exec_pdf.generate()
