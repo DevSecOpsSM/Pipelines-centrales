@@ -23,7 +23,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      issues: write
  
 
     steps:
@@ -37,7 +36,12 @@ jobs:
         continue-on-error: true
         run: |
           mkdir -p kics-output
-          # Quitamos el 'tail -5' para poder ver los logs reales si algo falla.
+          # Excluir paths que NO son IaC de la app:
+          #   - .github/               workflows del pipeline SSDLC (falsos positivos)
+          #   - .git/                  internals
+          #   - kics-output/           nuestro propio output (evita bucles)
+          #   - .pipelines-centrales/  checkout auxiliar del consumer
+          #   - node_modules/, vendor/ dependencias
           docker run --rm \
             -v "$PWD:/path" \
             checkmarx/kics:latest \
@@ -47,7 +51,7 @@ jobs:
             --output-path /path/kics-output \
             --output-name kics-results \
             --ignore-on-exit results \
-            --exclude-paths /path/kics-output,/path/.git \
+            --exclude-paths /path/kics-output,/path/.git,/path/.github,/path/.pipelines-centrales,/path/node_modules,/path/vendor \
             || true
 
           # Garantizar archivo JSON válido si KICS falló críticamente
@@ -184,8 +188,6 @@ jobs:
                 .header h1{{font-size:26px;font-weight:700;color:#FFFFFF;margin-top:16px}}
                 .meta{{color:#B0B0B0;font-size:13px;margin-top:10px}}
                 .meta span{{margin-right:20px}}
-                .btn-pdf{{position:absolute;top:40px;right:40px;background:#00F1C7;color:#000;font-weight:bold;padding:10px 20px;border:none;border-radius:6px;cursor:pointer;font-size:14px;transition:0.2s}}
-                .btn-pdf:hover{{background:#00c4a0}}
                 .cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:16px;padding:30px;max-width:1100px;margin:0 auto}}
                 .card{{background:#373737;border-radius:8px;padding:20px;text-align:center;border-top:4px solid}}
                 .card-total{{border-top-color:#B0B0B0}}.card-critical{{border-top-color:#F63D3D}}
@@ -218,42 +220,31 @@ jobs:
                 .no-findings h3{{font-size:20px;color:#4EDA56;margin-bottom:8px}}
                 .no-findings p{{color:#B0B0B0;font-size:14px}}
                 .footer{{text-align:center;padding:30px;color:#888888;font-size:12px;border-top:1px solid #373737;margin-top:20px}}
-                
-                /* ========================================================================= */
-                /* REGLAS ESPECÍFICAS PARA IMPRESIÓN (PDF)                                   */
-                /* ========================================================================= */
-                @media print {{
-                  @page {{ margin: 1.5cm; size: auto; }}
-                  body {{ 
-                    background: #FFFFFF !important; 
-                    color: #000000 !important; 
-                    -webkit-print-color-adjust: exact !important; 
-                    print-color-adjust: exact !important; 
-                  }}
-                  .header {{ background: #FFFFFF !important; border-bottom: 2px solid #00F1C7 !important; padding: 20px 0; }}
-                  .header h1 {{ color: #000000 !important; }}
-                  .btn-pdf {{ display: none !important; }}
-                  .cards {{ padding: 15px 0; gap: 10px; }}
-                  .card {{ background: #F6F6F6 !important; border: 1px solid #D1D1D1 !important; border-top: 4px solid !important; padding: 15px; page-break-inside: avoid; }}
-                  .num-total {{ color: #1A1A1A !important; }}
-                  .section {{ padding: 0; }}
-                  .wrap {{ border: 1px solid #D1D1D1 !important; background: #FFFFFF !important; }}
-                  
-                  /* Control estricto de la tabla para evitar rupturas */
-                  table {{ table-layout: fixed; width: 100%; }}
-                  thead {{ display: table-header-group; background: #F6F6F6 !important; }}
-                  tr {{ page-break-inside: avoid; page-break-after: auto; }}
-                  td {{ border-bottom: 1px solid #E7E7E7 !important; color: #1A1A1A !important; padding: 10px; vertical-align: middle; }}
-                  th {{ color: #373737 !important; border-bottom: 2px solid #D1D1D1 !important; padding: 10px; }}
-                  
-                  /* Arreglo de los badges y códigos en fondo blanco */
-                  .badge {{ border: none !important; padding: 4px 8px; font-size: 10px; }}
-                  .badge-critical {{ background: #F63D3D !important; color: #FFFFFF !important; }}
-                  .badge-high {{ background: #FAD900 !important; color: #000000 !important; }}
-                  .badge-medium {{ background: #00F1C7 !important; color: #000000 !important; }}
-                  .badge-low {{ background: #888888 !important; color: #FFFFFF !important; }}
-                  .badge-info {{ background: #4b8aba !important; color: #FFFFFF !important; }}
+                .btn-pdf{{position:absolute;top:40px;right:40px;background:#00F1C7;color:#000;font-weight:bold;padding:10px 20px;border:none;border-radius:6px;cursor:pointer;font-size:14px;transition:0.2s}}
+                .btn-pdf:hover{{background:#00c4a0}}
+                @media print{{
+                  @page{{margin:1.5cm;size:auto}}
+                  body{{background:#FFFFFF !important;color:#000000 !important;-webkit-print-color-adjust:exact !important;print-color-adjust:exact !important}}
+                  .header{{background:#FFFFFF !important;border-bottom:2px solid #00F1C7 !important;padding:20px 0}}
+                  .header h1{{color:#000000 !important}}
+                  .btn-pdf{{display:none !important}}
+                  .cards{{padding:15px 0;gap:10px}}
+                  .card{{background:#F6F6F6 !important;border:1px solid #D1D1D1 !important;border-top:4px solid !important;padding:15px;page-break-inside:avoid}}
+                  .num-total,.num-crit,.num-high,.num-med,.num-low,.num-info,.num-error,.num-warn,.num-style{{color:#1A1A1A !important}}
+                  .wrap{{border:1px solid #D1D1D1 !important;background:#FFFFFF !important}}
+                  table{{table-layout:fixed;width:100%}}
+                  thead{{display:table-header-group;background:#F6F6F6 !important}}
+                  tr{{page-break-inside:avoid;page-break-after:auto}}
+                  td{{border-bottom:1px solid #E7E7E7 !important;color:#1A1A1A !important;padding:10px;vertical-align:middle}}
+                  th{{color:#373737 !important;border-bottom:2px solid #D1D1D1 !important;padding:10px}}
+                  .badge{{border:none !important;padding:4px 8px;font-size:10px}}
+                  .badge-critical{{background:#F63D3D !important;color:#FFFFFF !important}}
+                  .badge-high{{background:#FAD900 !important;color:#000000 !important}}
+                  .badge-medium{{background:#00F1C7 !important;color:#000000 !important}}
+                  .badge-low{{background:#888888 !important;color:#FFFFFF !important}}
+                  .badge-info{{background:#4b8aba !important;color:#FFFFFF !important}}
                 }}
+                
               </style>
             </head>
             <body>
@@ -293,80 +284,76 @@ jobs:
           pip install deep-translator --quiet 2>/dev/null || true
           python3 -c "$PYTHON_SCRIPT"
 
-      - name: Subir reporte KICS
+      - name: Subir reporte KICS HTML + JSON raw
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: security-containers-kics
-          path: reports/${{ github.event.repository.name }}/
+          path: |
+            reports/${{ github.event.repository.name }}/kics-report.html
+            kics-output/kics-results.json
           retention-days: 30
           if-no-files-found: warn
 
-      - name: Crear Issues en GitHub (KICS - Límite 10 por Severidad)
+      - name: Subir KICS raw JSON (input para qg-summary)
         if: always()
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          cat << 'EOF' > create_issues_kics.py
-          import json, os, subprocess
+        uses: actions/upload-artifact@v4
+        with:
+          name: sec-containers-kics-raw
+          path: kics-output/kics-results.json
+          retention-days: 1
+          if-no-files-found: warn
 
-          raw_path = 'kics-output/kics-results.json'
-          if not os.path.exists(raw_path):
-              exit(0)
-
-          try:
-              data = json.load(open(raw_path, encoding='utf-8'))
-              queries = data.get('queries', [])
-          except Exception:
-              exit(0)
-
-          try:
-              cmd_list = ['gh', 'issue', 'list', '--state', 'open', '--json', 'title']
-              existing_titles = [i['title'] for i in json.loads(subprocess.check_output(cmd_list).decode('utf-8'))]
-          except:
-              existing_titles = []
-
-          MAX_ISSUES_PER_SEV = 10
-          creados_por_sev = {'CRITICAL': 0, 'HIGH': 0, 'MEDIUM': 0, 'LOW': 0, 'INFO': 0}
-
-          for q in queries:
-              sev = q.get('severity', 'INFO').upper()
-              
-              if creados_por_sev.get(sev, 0) >= MAX_ISSUES_PER_SEV:
-                  continue
-                  
-              qname = q.get('query_name', 'unknown')
-              desc = q.get('description', '')[:300]
-              files = q.get('files', [])
-              
-              # Formatear la lista de archivos afectados
-              files_str = "\n".join([f"- `{f.get('file_name', '?')}` (Línea: {f.get('line', '?')})" for f in files[:5]])
-              if len(files) > 5:
-                  files_str += f"\n- ...y {len(files)-5} archivos más."
-                  
-              title = f"🚨 [IaC] KICS: {qname}"
-              
-              if title not in existing_titles:
-                  body = (f"### 🏗️ Misconfiguración de Infraestructura\n\n"
-                          f"**Herramienta**: KICS\n"
-                          f"**Severidad**: {sev}\n"
-                          f"**Vulnerabilidad**: `{qname}`\n\n"
-                          f"**Archivos afectados**:\n{files_str}\n\n"
-                          f"**Descripción**:\n> {desc}\n\n"
-                          f"Revise el reporte PDF/HTML adjunto para la solución sugerida.")
-                  
-                  try:
-                      subprocess.run(['gh', 'issue', 'create', '--title', title, '--body', body], check=True)
-                      existing_titles.append(title)
-                      creados_por_sev[sev] += 1
-                  except:
-                      pass
-
-          print(f"[Issues KICS] Completado. CRITICAL: {creados_por_sev['CRITICAL']}, HIGH: {creados_por_sev['HIGH']}, MEDIUM: {creados_por_sev['MEDIUM']}")
-          EOF
-          
-          python3 create_issues_kics.py
+      # ════════════════════════════════════════════════════════════════════
+      # DEPRECATED — Creación de Issues directos (KICS)
+      # Reemplazado por el PR comment consolidado en quality-gate-consolidated.
+      # ════════════════════════════════════════════════════════════════════
+      # - name: Crear Issues en GitHub (KICS - Límite 10 por Severidad)
+      #   if: always()
+      #   continue-on-error: true
+      #   env:
+      #     GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      #   run: |
+      #     cat << 'EOF' > create_issues_kics.py
+      #     import json, os, subprocess
+      #     raw_path = 'kics-output/kics-results.json'
+      #     if not os.path.exists(raw_path):
+      #         exit(0)
+      #     try:
+      #         data = json.load(open(raw_path, encoding='utf-8'))
+      #         queries = data.get('queries', [])
+      #     except Exception:
+      #         exit(0)
+      #     try:
+      #         cmd_list = ['gh', 'issue', 'list', '--state', 'open', '--json', 'title']
+      #         existing_titles = [i['title'] for i in json.loads(subprocess.check_output(cmd_list).decode('utf-8'))]
+      #     except Exception:
+      #         existing_titles = []
+      #     MAX_ISSUES_PER_SEV = 10
+      #     creados_por_sev = {'CRITICAL': 0, 'HIGH': 0, 'MEDIUM': 0, 'LOW': 0, 'INFO': 0}
+      #     for q in queries:
+      #         sev = q.get('severity', 'INFO').upper()
+      #         if creados_por_sev.get(sev, 0) >= MAX_ISSUES_PER_SEV:
+      #             continue
+      #         qname = q.get('query_name', 'unknown')
+      #         desc  = q.get('description', '')[:300]
+      #         files = q.get('files', [])
+      #         files_str = "\n".join([f"- `{f.get('file_name','?')}` (Línea: {f.get('line','?')})" for f in files[:5]])
+      #         if len(files) > 5:
+      #             files_str += f"\n- ...y {len(files)-5} archivos más."
+      #         title = f"🚨 [IaC] KICS: {qname}"
+      #         if title not in existing_titles:
+      #             body = (f"### 🏗️ Misconfiguración IaC\n\n**Tool**: KICS\n**Sev**: {sev}\n"
+      #                     f"**Vuln**: `{qname}`\n\n**Files**:\n{files_str}\n\n> {desc}")
+      #             try:
+      #                 subprocess.run(['gh', 'issue', 'create', '--title', title, '--body', body], check=True)
+      #                 existing_titles.append(title)
+      #                 creados_por_sev[sev] += 1
+      #             except Exception:
+      #                 pass
+      #     print(f"[Issues KICS] CRIT:{creados_por_sev['CRITICAL']} HIGH:{creados_por_sev['HIGH']}")
+      #     EOF
+      #     python3 create_issues_kics.py
 
   # ─────────────────────────────────────────────────────────────────────────
   # JOB 2 · HADOLINT — Linter de Dockerfiles
@@ -529,7 +516,6 @@ jobs:
                 .header h1{{font-size:26px;font-weight:700;color:#FFFFFF;margin-top:16px}}
                 .meta{{color:#B0B0B0;font-size:13px;margin-top:10px}}
                 .meta span{{margin-right:20px}}
-                .btn-pdf{{position:absolute;top:40px;right:40px;background:#00F1C7;color:#000;font-weight:bold;padding:10px 20px;border:none;border-radius:6px;cursor:pointer;font-size:14px}}
                 .cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:16px;padding:30px;max-width:1100px;margin:0 auto}}
                 .card{{background:#373737;border-radius:8px;padding:20px;text-align:center;border-top:4px solid}}
                 .card-total{{border-top-color:#B0B0B0}}.card-error{{border-top-color:#F63D3D}}
@@ -557,7 +543,30 @@ jobs:
                 .no-findings h3{{font-size:20px;color:#4EDA56;margin-bottom:8px}}
                 .no-findings p{{color:#B0B0B0;font-size:14px}}
                 .footer{{text-align:center;padding:30px;color:#888888;font-size:12px;border-top:1px solid #373737;margin-top:20px}}
-                @media print{{body{{background:#FFF!important;color:#000!important}}.header{{background:#FFF!important}}.btn-pdf{{display:none!important}}.wrap{{background:#FFF!important}}thead{{background:#F6F6F6!important}}th{{color:#373737!important}}td{{color:#1A1A1A!important}}.card{{background:#F6F6F6!important}}}}
+                .btn-pdf{{position:absolute;top:40px;right:40px;background:#00F1C7;color:#000;font-weight:bold;padding:10px 20px;border:none;border-radius:6px;cursor:pointer;font-size:14px;transition:0.2s}}
+                .btn-pdf:hover{{background:#00c4a0}}
+                @media print{{
+                  @page{{margin:1.5cm;size:auto}}
+                  body{{background:#FFFFFF !important;color:#000000 !important;-webkit-print-color-adjust:exact !important;print-color-adjust:exact !important}}
+                  .header{{background:#FFFFFF !important;border-bottom:2px solid #00F1C7 !important;padding:20px 0}}
+                  .header h1{{color:#000000 !important}}
+                  .btn-pdf{{display:none !important}}
+                  .cards{{padding:15px 0;gap:10px}}
+                  .card{{background:#F6F6F6 !important;border:1px solid #D1D1D1 !important;border-top:4px solid !important;padding:15px;page-break-inside:avoid}}
+                  .num-total,.num-crit,.num-high,.num-med,.num-low,.num-info,.num-error,.num-warn,.num-style{{color:#1A1A1A !important}}
+                  .wrap{{border:1px solid #D1D1D1 !important;background:#FFFFFF !important}}
+                  table{{table-layout:fixed;width:100%}}
+                  thead{{display:table-header-group;background:#F6F6F6 !important}}
+                  tr{{page-break-inside:avoid;page-break-after:auto}}
+                  td{{border-bottom:1px solid #E7E7E7 !important;color:#1A1A1A !important;padding:10px;vertical-align:middle}}
+                  th{{color:#373737 !important;border-bottom:2px solid #D1D1D1 !important;padding:10px}}
+                  .badge{{border:none !important;padding:4px 8px;font-size:10px}}
+                  .badge-critical{{background:#F63D3D !important;color:#FFFFFF !important}}
+                  .badge-high{{background:#FAD900 !important;color:#000000 !important}}
+                  .badge-medium{{background:#00F1C7 !important;color:#000000 !important}}
+                  .badge-low{{background:#888888 !important;color:#FFFFFF !important}}
+                  .badge-info{{background:#4b8aba !important;color:#FFFFFF !important}}
+                }}
               </style>
             </head>
             <body>
@@ -596,13 +605,24 @@ jobs:
           pip install deep-translator --quiet 2>/dev/null || true
           python3 -c "$PYTHON_SCRIPT"
 
-      - name: Subir reporte Hadolint
+      - name: Subir reporte Hadolint HTML + JSON raw
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: security-containers-hadolint
-          path: reports/${{ github.event.repository.name }}/
+          path: |
+            reports/${{ github.event.repository.name }}/hadolint-report.html
+            reports/hadolint-raw.json
           retention-days: 30
+          if-no-files-found: warn
+
+      - name: Subir Hadolint raw JSON (input para qg-summary)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sec-containers-hadolint-raw
+          path: reports/hadolint-raw.json
+          retention-days: 1
           if-no-files-found: warn
 
   # ─────────────────────────────────────────────────────────────────────────
@@ -613,7 +633,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      issues: write
 
     steps:
       - name: Checkout repositorio
@@ -799,7 +818,6 @@ jobs:
                 .header h1{{font-size:26px;font-weight:700;color:#FFFFFF;margin-top:16px}}
                 .meta{{color:#B0B0B0;font-size:13px;margin-top:10px}}
                 .meta span{{margin-right:20px}}
-                .btn-pdf{{position:absolute;top:40px;right:40px;background:#00F1C7;color:#000;font-weight:bold;padding:10px 20px;border:none;border-radius:6px;cursor:pointer;font-size:14px}}
                 .cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:16px;padding:30px;max-width:1100px;margin:0 auto}}
                 .card{{background:#373737;border-radius:8px;padding:20px;text-align:center;border-top:4px solid}}
                 .card-total{{border-top-color:#B0B0B0}}.card-critical{{border-top-color:#F63D3D}}
@@ -827,7 +845,30 @@ jobs:
                 .no-findings h3{{font-size:20px;color:#4EDA56;margin-bottom:8px}}
                 .no-findings p{{color:#B0B0B0;font-size:14px}}
                 .footer{{text-align:center;padding:30px;color:#888888;font-size:12px;border-top:1px solid #373737;margin-top:20px}}
-                @media print{{body{{background:#FFF!important;color:#000!important}}.header{{background:#FFF!important}}.btn-pdf{{display:none!important}}.wrap{{background:#FFF!important}}thead{{background:#F6F6F6!important}}th{{color:#373737!important}}td{{color:#1A1A1A!important}}.card{{background:#F6F6F6!important}}}}
+                .btn-pdf{{position:absolute;top:40px;right:40px;background:#00F1C7;color:#000;font-weight:bold;padding:10px 20px;border:none;border-radius:6px;cursor:pointer;font-size:14px;transition:0.2s}}
+                .btn-pdf:hover{{background:#00c4a0}}
+                @media print{{
+                  @page{{margin:1.5cm;size:auto}}
+                  body{{background:#FFFFFF !important;color:#000000 !important;-webkit-print-color-adjust:exact !important;print-color-adjust:exact !important}}
+                  .header{{background:#FFFFFF !important;border-bottom:2px solid #00F1C7 !important;padding:20px 0}}
+                  .header h1{{color:#000000 !important}}
+                  .btn-pdf{{display:none !important}}
+                  .cards{{padding:15px 0;gap:10px}}
+                  .card{{background:#F6F6F6 !important;border:1px solid #D1D1D1 !important;border-top:4px solid !important;padding:15px;page-break-inside:avoid}}
+                  .num-total,.num-crit,.num-high,.num-med,.num-low,.num-info,.num-error,.num-warn,.num-style{{color:#1A1A1A !important}}
+                  .wrap{{border:1px solid #D1D1D1 !important;background:#FFFFFF !important}}
+                  table{{table-layout:fixed;width:100%}}
+                  thead{{display:table-header-group;background:#F6F6F6 !important}}
+                  tr{{page-break-inside:avoid;page-break-after:auto}}
+                  td{{border-bottom:1px solid #E7E7E7 !important;color:#1A1A1A !important;padding:10px;vertical-align:middle}}
+                  th{{color:#373737 !important;border-bottom:2px solid #D1D1D1 !important;padding:10px}}
+                  .badge{{border:none !important;padding:4px 8px;font-size:10px}}
+                  .badge-critical{{background:#F63D3D !important;color:#FFFFFF !important}}
+                  .badge-high{{background:#FAD900 !important;color:#000000 !important}}
+                  .badge-medium{{background:#00F1C7 !important;color:#000000 !important}}
+                  .badge-low{{background:#888888 !important;color:#FFFFFF !important}}
+                  .badge-info{{background:#4b8aba !important;color:#FFFFFF !important}}
+                }}
               </style>
             </head>
             <body>
@@ -869,82 +910,242 @@ jobs:
         continue-on-error: true
         run: trivy fs . --format json --output reports/trivy-raw.json || true
 
-      - name: Subir reportes Trivy
+      - name: Subir reportes Trivy HTML + JSON raw
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: security-containers-trivy
-          path: reports/${{ github.event.repository.name }}/
+          path: |
+            reports/${{ github.event.repository.name }}/trivy-fs-report.html
+            reports/${{ github.event.repository.name }}/trivy-image-report.html
+            reports/trivy-raw.json
           retention-days: 30
           if-no-files-found: warn
-       
 
-      - name: Crear Issues en GitHub (Trivy - Límite 10 por Severidad)
+      - name: Subir Trivy raw JSON (input para qg-summary)
         if: always()
-        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: sec-containers-trivy-raw
+          path: reports/trivy-raw.json
+          retention-days: 1
+          if-no-files-found: warn
+
+      # ════════════════════════════════════════════════════════════════════
+      # DEPRECATED — Creación de Issues directos (Trivy)
+      # Reemplazado por el PR comment consolidado en quality-gate-consolidated.
+      # ════════════════════════════════════════════════════════════════════
+      # - name: Crear Issues en GitHub (Trivy - Límite 10 por Severidad)
+      #   if: always()
+      #   continue-on-error: true
+      #   env:
+      #     GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      #   run: |
+      #     cat << 'EOF' > create_issues_trivy.py
+      #     import json, os, subprocess
+      #     raw_path = 'reports/trivy-raw.json'
+      #     if not os.path.exists(raw_path):
+      #         exit(0)
+      #     try:
+      #         data = json.load(open(raw_path, encoding='utf-8'))
+      #         results = data.get('Results', [])
+      #     except Exception:
+      #         exit(0)
+      #     try:
+      #         cmd_list = ['gh', 'issue', 'list', '--state', 'open', '--json', 'title']
+      #         existing_titles = [i['title'] for i in json.loads(subprocess.check_output(cmd_list).decode('utf-8'))]
+      #     except Exception:
+      #         existing_titles = []
+      #     MAX_ISSUES_PER_SEV = 10
+      #     creados_por_sev = {'CRITICAL': 0, 'HIGH': 0, 'MEDIUM': 0, 'LOW': 0, 'UNKNOWN': 0}
+      #     for r in results:
+      #         target = r.get('Target', 'unknown')
+      #         for v in r.get('Vulnerabilities', []):
+      #             sev = v.get('Severity', 'UNKNOWN').upper()
+      #             if creados_por_sev.get(sev, 0) >= MAX_ISSUES_PER_SEV:
+      #                 continue
+      #             vid = v.get('VulnerabilityID', 'unknown')
+      #             pkg = v.get('PkgName', 'unknown')
+      #             inst = v.get('InstalledVersion', 'unknown')
+      #             fixed = v.get('FixedVersion', 'N/A')
+      #             title_desc = v.get('Title', v.get('Description', ''))[:200]
+      #             title = f"🚨 [SCA] Trivy: {vid} en {pkg}"
+      #             if title not in existing_titles:
+      #                 body = (f"### 📦 Container vuln\n\n**Tool**: Trivy\n**Sev**: {sev}\n"
+      #                         f"**CVE**: `{vid}`\n**Target**: `{target}`\n"
+      #                         f"| Pkg | Installed | Fixed |\n|---|---|---|\n"
+      #                         f"| `{pkg}` | `{inst}` | `{fixed}` |\n\n> {title_desc}")
+      #                 try:
+      #                     subprocess.run(['gh', 'issue', 'create', '--title', title, '--body', body], check=True)
+      #                     existing_titles.append(title)
+      #                     creados_por_sev[sev] += 1
+      #                 except Exception:
+      #                     pass
+      #     print(f"[Issues Trivy] CRIT:{creados_por_sev['CRITICAL']} HIGH:{creados_por_sev['HIGH']}")
+      #     EOF
+      #     python3 create_issues_trivy.py
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # JOB 4 · QG-SUMMARY — Consolida KICS + Hadolint + Trivy en un solo
+  # qg-summary-sec-containers.json (input del consolidador global).
+  #
+  # Mapeo CVSSv3 por herramienta:
+  #   KICS:     CRITICAL→critical · HIGH→high · MEDIUM→medium · LOW→low · INFO→info
+  #   Hadolint: error→medium · warning→low · info→info · style→info
+  #   Trivy:    CRITICAL→critical · HIGH→high · MEDIUM→medium · LOW→low · UNKNOWN→low
+  #
+  # workflow_blocked si critical/high/medium > 0 (suma de los 3 tools).
+  # ═══════════════════════════════════════════════════════════════════════
+  qg-summary:
+    name: "Quality Gate — Container Summary"
+    needs: [kics, hadolint, trivy]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Descargar raw JSONs de KICS · Hadolint · Trivy
+        uses: actions/download-artifact@v4
+        with:
+          pattern: sec-containers-*-raw
+          path: raw/
+          merge-multiple: false
+
+      - name: Generar qg-summary-sec-containers.json
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          cat << 'EOF' > create_issues_trivy.py
-          import json, os, subprocess
+          REPO_NAME: ${{ github.event.repository.name }}
+          PYTHON_SCRIPT: |
+            import json, os
+            from pathlib import Path
 
-          raw_path = 'reports/trivy-raw.json'
-          if not os.path.exists(raw_path):
-              exit(0)
+            repo_name = os.environ['REPO_NAME']
+            out_dir   = f"reports/{repo_name}"
+            os.makedirs(out_dir, exist_ok=True)
 
-          try:
-              data = json.load(open(raw_path, encoding='utf-8'))
-              results = data.get('Results', [])
-          except Exception:
-              exit(0)
+            counts = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
+            top    = []
+            tools_run = []
 
-          try:
-              cmd_list = ['gh', 'issue', 'list', '--state', 'open', '--json', 'title']
-              existing_titles = [i['title'] for i in json.loads(subprocess.check_output(cmd_list).decode('utf-8'))]
-          except:
-              existing_titles = []
+            # ── KICS ─────────────────────────────────────────────────────
+            kics_path = "raw/sec-containers-kics-raw/kics-results.json"
+            if os.path.exists(kics_path):
+                tools_run.append("kics")
+                try:
+                    data = json.load(open(kics_path, encoding="utf-8"))
+                    queries = data.get("queries", []) or []
+                    SEV_KICS = {"CRITICAL":"critical","HIGH":"high","MEDIUM":"medium","LOW":"low","INFO":"info"}
+                    for q in queries:
+                        sev_native = q.get("severity", "INFO").upper()
+                        counts[SEV_KICS.get(sev_native, "info")] += 1
+                    sev_order = {"CRITICAL":0,"HIGH":1,"MEDIUM":2,"LOW":3,"INFO":4}
+                    for q in sorted(queries, key=lambda x: sev_order.get(x.get("severity","INFO").upper(),99))[:5]:
+                        sev_native = q.get("severity", "INFO").upper()
+                        files = q.get("files") or []
+                        loc   = f"{files[0].get('file_name','?')}:{files[0].get('line','?')}" if files else "—"
+                        top.append({
+                            "tool":        "kics",
+                            "severity":    SEV_KICS.get(sev_native, "info"),
+                            "rule_id":     q.get("query_name", "?"),
+                            "location":    loc,
+                            "description": str(q.get("description", ""))[:200],
+                        })
+                except Exception as e:
+                    print(f"[KICS] Error procesando JSON: {e}")
 
-          MAX_ISSUES_PER_SEV = 10
-          creados_por_sev = {'CRITICAL': 0, 'HIGH': 0, 'MEDIUM': 0, 'LOW': 0, 'UNKNOWN': 0}
+            # ── Hadolint ─────────────────────────────────────────────────
+            hado_path = "raw/sec-containers-hadolint-raw/hadolint-raw.json"
+            if os.path.exists(hado_path):
+                tools_run.append("hadolint")
+                try:
+                    data = json.load(open(hado_path, encoding="utf-8"))
+                    findings = data if isinstance(data, list) else []
+                    SEV_HADO = {"error":"medium","warning":"low","info":"info","style":"info"}
+                    for f in findings:
+                        lv = (f.get("level") or "info").lower()
+                        counts[SEV_HADO.get(lv, "info")] += 1
+                    for f in findings[:5]:
+                        lv = (f.get("level") or "info").lower()
+                        top.append({
+                            "tool":        "hadolint",
+                            "severity":    SEV_HADO.get(lv, "info"),
+                            "rule_id":     str(f.get("code", "?")),
+                            "location":    f"{f.get('file','?')}:{f.get('line','?')}",
+                            "description": str(f.get("message", ""))[:200],
+                        })
+                except Exception as e:
+                    print(f"[Hadolint] Error procesando JSON: {e}")
 
-          for r in results:
-              target = r.get('Target', 'unknown')
-              for v in r.get('Vulnerabilities', []):
-                  sev = v.get('Severity', 'UNKNOWN').upper()
-                  
-                  if creados_por_sev.get(sev, 0) >= MAX_ISSUES_PER_SEV:
-                      continue
-                      
-                  vid = v.get('VulnerabilityID', 'unknown')
-                  pkg = v.get('PkgName', 'unknown')
-                  inst = v.get('InstalledVersion', 'unknown')
-                  fixed = v.get('FixedVersion', 'N/A')
-                  title_desc = v.get('Title', v.get('Description', ''))[:200]
-                  
-                  title = f"🚨 [SCA] Trivy: {vid} en {pkg}"
-                  
-                  if title not in existing_titles:
-                      body = (f"### 📦 Vulnerabilidad en Dependencias / Contenedor\n\n"
-                              f"**Herramienta**: Trivy\n"
-                              f"**Severidad**: {sev}\n"
-                              f"**CVE**: `{vid}`\n"
-                              f"**Objetivo (Target)**: `{target}`\n\n"
-                              f"| Paquete | Instalada | Corregida en |\n"
-                              f"|---|---|---|\n"
-                              f"| `{pkg}` | `{inst}` | `{fixed}` |\n\n"
-                              f"**Descripción**:\n> {title_desc}\n\n"
-                              f"Revise el reporte adjunto para más información.")
-                      
-                      try:
-                          subprocess.run(['gh', 'issue', 'create', '--title', title, '--body', body], check=True)
-                          existing_titles.append(title)
-                          creados_por_sev[sev] += 1
-                      except:
-                          pass
+            # ── Trivy ────────────────────────────────────────────────────
+            trivy_path = "raw/sec-containers-trivy-raw/trivy-raw.json"
+            if os.path.exists(trivy_path):
+                tools_run.append("trivy")
+                try:
+                    data = json.load(open(trivy_path, encoding="utf-8"))
+                    vulns = []
+                    for r in data.get("Results", []) or []:
+                        for v in r.get("Vulnerabilities", []) or []:
+                            v["_target"] = r.get("Target", "?")
+                            vulns.append(v)
+                    SEV_TRIVY = {"CRITICAL":"critical","HIGH":"high","MEDIUM":"medium","LOW":"low","UNKNOWN":"low"}
+                    for v in vulns:
+                        sev_native = (v.get("Severity") or "UNKNOWN").upper()
+                        counts[SEV_TRIVY.get(sev_native, "low")] += 1
+                    sev_order = {"CRITICAL":0,"HIGH":1,"MEDIUM":2,"LOW":3,"UNKNOWN":4}
+                    for v in sorted(vulns, key=lambda x: sev_order.get((x.get("Severity") or "UNKNOWN").upper(), 99))[:5]:
+                        sev_native = (v.get("Severity") or "UNKNOWN").upper()
+                        top.append({
+                            "tool":        "trivy",
+                            "severity":    SEV_TRIVY.get(sev_native, "low"),
+                            "rule_id":     v.get("VulnerabilityID", "?"),
+                            "location":    f"{v.get('PkgName','?')}@{v.get('InstalledVersion','?')} ({v.get('_target','?')})",
+                            "description": str(v.get("Title") or v.get("Description") or "")[:200],
+                        })
+                except Exception as e:
+                    print(f"[Trivy] Error procesando JSON: {e}")
 
-          print(f"[Issues Trivy] Completado. CRITICAL: {creados_por_sev['CRITICAL']}, HIGH: {creados_por_sev['HIGH']}")
-          EOF
-          
-          python3 create_issues_trivy.py
+            # ── Decisión global ──────────────────────────────────────────
+            blocked = counts["critical"] > 0 or counts["high"] > 0 or counts["medium"] > 0
+            reason  = ""
+            if blocked:
+                parts = []
+                for sev in ("critical", "high", "medium"):
+                    if counts[sev]:
+                        parts.append(f"{counts[sev]} {sev}")
+                reason = ", ".join(parts)
 
-      
+            scan_status = "completed" if tools_run else "skipped"
+            scan_reason = "" if tools_run else "Ningún raw JSON disponible de KICS/Hadolint/Trivy"
+
+            sev_priority = {"critical":0,"high":1,"medium":2,"low":3,"info":4}
+            top.sort(key=lambda f: sev_priority.get(f["severity"], 99))
+            top = top[:10]
+
+            summary = {
+                "schema_version":         "1.0",
+                "workflow":               "sec-containers",
+                "workflow_display_name":  "Container & IaC Security",
+                "stage_number":           6,
+                "tools":                  tools_run,
+                "scan_status":            scan_status,
+                "scan_status_reason":     scan_reason,
+                "severity_counts":        counts,
+                "top_findings":           top,
+                "workflow_blocked":       blocked,
+                "block_reason":           reason,
+            }
+
+            out_path = f"{out_dir}/qg-summary-sec-containers.json"
+            with open(out_path, "w", encoding="utf-8") as fh:
+                json.dump(summary, fh, indent=2, ensure_ascii=False)
+            print(f"[qg-summary] sec-containers tools={tools_run} → {counts} blocked={blocked}")
+        run: python3 -c "$PYTHON_SCRIPT"
+
+      - name: Subir qg-summary (input para Quality Gate consolidador)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qg-summary-sec-containers
+          path: reports/${{ github.event.repository.name }}/qg-summary-sec-containers.json
+          retention-days: 30
+          if-no-files-found: warn

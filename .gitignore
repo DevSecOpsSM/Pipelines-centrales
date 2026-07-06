@@ -1,1 +1,45 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# .gitignore — Pipelines-centrales
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Claude Code — configuración y documentación interna (no versionadas)
 Claude.md
+.claude/
+
+# Reportes generados localmente por los workflows
+reports/
+*.html.bak
+
+# Logs
+*.log
+*.log.*
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+
+# Pre-commit cache
+.pre-commit-cache/
+
+# IDE / editores
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Sistema operativo
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Temporales
+*.tmp
+*.temp
+*.bak

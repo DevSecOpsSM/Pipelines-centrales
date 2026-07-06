@@ -15,7 +15,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      issues: write
 
     steps:
       - name: Checkout repositorio
@@ -27,13 +26,22 @@ jobs:
       - name: Instalar Checkov
         run: pip install checkov --quiet
 
-      - name: Ejecutar Checkov (Exclusivo Terraform)
+      - name: Ejecutar Checkov (IaC multi-framework)
         continue-on-error: true
         run: |
+          # Frameworks explícitos: cubre Terraform, Dockerfile, K8s,
+          # GitHub Actions y detección de secretos en IaC.
+          # NO se usa --framework terraform solo porque filtra a Terraform
+          # y da resource_count=0 en repos que no son 100% IaC.
           checkov -d . \
-            --framework terraform \
+            --framework terraform,dockerfile,kubernetes,github_actions,secrets \
+            --skip-path .git \
+            --skip-path .pipelines-centrales \
+            --skip-path node_modules \
+            --skip-path vendor \
+            --skip-path reports \
             --output json > reports/checkov-raw.json || true
-            
+
           # Garantizar archivo JSON válido si no hay salida
           if [ ! -s reports/checkov-raw.json ]; then
             echo '{"results":{"passed_checks":[],"failed_checks":[]}}' > reports/checkov-raw.json
@@ -157,8 +165,6 @@ jobs:
                 .header h1{{font-size:26px;font-weight:700;color:#FFFFFF;margin-top:16px}}
                 .meta{{color:#B0B0B0;font-size:13px;margin-top:10px}}
                 .meta span{{margin-right:20px}}
-                .btn-pdf{{position:absolute;top:40px;right:40px;background:#00F1C7;color:#000;font-weight:bold;padding:10px 20px;border:none;border-radius:6px;cursor:pointer;font-size:14px;transition:0.2s}}
-                .btn-pdf:hover{{background:#00c4a0}}
                 .cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:16px;padding:30px;max-width:1100px;margin:0 auto}}
                 .card{{background:#373737;border-radius:8px;padding:20px;text-align:center;border-top:4px solid}}
                 .card-total{{border-top-color:#B0B0B0}}.card-passed{{border-top-color:#4EDA56}}.card-failed{{border-top-color:#F63D3D}}
@@ -188,28 +194,28 @@ jobs:
                 .no-findings h3{{font-size:20px;color:#4EDA56;margin-bottom:8px}}
                 .no-findings p{{color:#B0B0B0}}
                 .footer{{text-align:center;padding:30px;color:#888888;font-size:12px;border-top:1px solid #373737;margin-top:20px}}
-                
-                @media print {{
-                  @page {{ margin: 1.5cm; size: auto; }}
-                  body {{ background: #FFFFFF !important; color: #000000 !important; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }}
-                  .header {{ background: #FFFFFF !important; border-bottom: 2px solid #00F1C7 !important; padding: 20px 0; }}
-                  .header h1 {{ color: #000000 !important; }}
-                  .btn-pdf {{ display: none !important; }}
-                  .cards {{ padding: 15px 0; gap: 10px; }}
-                  .card {{ background: #F6F6F6 !important; border: 1px solid #D1D1D1 !important; border-top: 4px solid !important; padding: 15px; page-break-inside: avoid; }}
-                  .num-total, .num-passed, .num-failed {{ color: #1A1A1A !important; }}
-                  .section {{ padding: 0; }}
-                  .wrap {{ border: 1px solid #D1D1D1 !important; background: #FFFFFF !important; }}
-                  table {{ table-layout: fixed; width: 100%; }}
-                  thead {{ display: table-header-group; background: #F6F6F6 !important; }}
-                  tr {{ page-break-inside: avoid; page-break-after: auto; }}
-                  td {{ border-bottom: 1px solid #E7E7E7 !important; color: #1A1A1A !important; padding: 10px; vertical-align: middle; }}
-                  th {{ color: #373737 !important; border-bottom: 2px solid #D1D1D1 !important; padding: 10px; }}
-                  .badge {{ border: none !important; padding: 4px 8px; font-size: 10px; }}
-                  .badge-critical {{ background: #F63D3D !important; color: #FFFFFF !important; }}
-                  .badge-high {{ background: #FAD900 !important; color: #000000 !important; }}
-                  .badge-medium {{ background: #00F1C7 !important; color: #000000 !important; }}
-                  .rule {{ background: #E7E7E7 !important; color: #000 !important; border: 1px solid #CCC !important; }}
+                .btn-pdf{{position:absolute;top:40px;right:40px;background:#00F1C7;color:#000;font-weight:bold;padding:10px 20px;border:none;border-radius:6px;cursor:pointer;font-size:14px;transition:0.2s}}
+                .btn-pdf:hover{{background:#00c4a0}}
+                @media print{{
+                  @page{{margin:1.5cm;size:auto}}
+                  body{{background:#FFFFFF !important;color:#000000 !important;-webkit-print-color-adjust:exact !important;print-color-adjust:exact !important}}
+                  .header{{background:#FFFFFF !important;border-bottom:2px solid #00F1C7 !important;padding:20px 0}}
+                  .header h1{{color:#000000 !important}}
+                  .btn-pdf{{display:none !important}}
+                  .cards{{padding:15px 0;gap:10px}}
+                  .card{{background:#F6F6F6 !important;border:1px solid #D1D1D1 !important;border-top:4px solid !important;padding:15px;page-break-inside:avoid}}
+                  .num-total,.num-passed,.num-failed{{color:#1A1A1A !important}}
+                  .wrap{{border:1px solid #D1D1D1 !important;background:#FFFFFF !important}}
+                  table{{table-layout:fixed;width:100%}}
+                  thead{{display:table-header-group;background:#F6F6F6 !important}}
+                  tr{{page-break-inside:avoid;page-break-after:auto}}
+                  td{{border-bottom:1px solid #E7E7E7 !important;color:#1A1A1A !important;padding:10px;vertical-align:middle}}
+                  th{{color:#373737 !important;border-bottom:2px solid #D1D1D1 !important;padding:10px}}
+                  .badge{{border:none !important;padding:4px 8px;font-size:10px}}
+                  .badge-critical{{background:#F63D3D !important;color:#FFFFFF !important}}
+                  .badge-high{{background:#FAD900 !important;color:#000000 !important}}
+                  .badge-medium{{background:#00F1C7 !important;color:#000000 !important}}
+                  .rule{{background:#E7E7E7 !important;color:#000 !important;border:1px solid #CCC !important}}
                 }}
               </style>
             </head>
@@ -249,87 +255,171 @@ jobs:
 
         run: |
           python3 -c "$PYTHON_SCRIPT"
-      - name: Subir reporte Checkov
+      # ────────────────────────────────────────────────────────────────────
+      # Quality Gate — Generar qg-summary normalizado (CVSSv3)
+      #
+      # Mapeo Checkov → CVSSv3:
+      #   - severity nativa si está presente (CRITICAL/HIGH/MEDIUM/LOW) → directo
+      #   - SIN severity → HIGH por defecto (Checkov OSS no siempre la trae;
+      #     política SEI/CIS: tratar IaC unknown como High por riesgo)
+      #
+      # workflow_blocked si critical/high/medium > 0.
+      # ────────────────────────────────────────────────────────────────────
+      - name: Generar qg-summary-sec-iac-terraform.json
+        if: always()
+        env:
+          REPO_NAME: ${{ github.event.repository.name }}
+          PYTHON_SCRIPT: |
+            import json, os
+
+            repo_name = os.environ['REPO_NAME']
+            raw_path  = "reports/checkov-raw.json"
+
+            failed_checks = []
+            scan_status   = "completed"
+            scan_reason   = ""
+
+            if os.path.exists(raw_path):
+                try:
+                    data = json.load(open(raw_path, encoding="utf-8"))
+                    reports = data if isinstance(data, list) else [data]
+                    for rep in reports:
+                        if "results" in rep:
+                            failed_checks.extend(rep["results"].get("failed_checks", []))
+                except Exception as e:
+                    scan_status = "error"
+                    scan_reason = f"No se pudo leer JSON: {e}"
+            else:
+                scan_status = "skipped"
+                scan_reason = "No se encontró checkov-raw.json (¿no hay Terraform en el repo?)"
+
+            SEV_MAP = {"CRITICAL":"critical","HIGH":"high","MEDIUM":"medium","LOW":"low","INFO":"info"}
+            counts  = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
+
+            for c in failed_checks:
+                sev_native = (c.get("severity") or "HIGH").upper()  # default HIGH (política SEI/CIS)
+                sev_cvss   = SEV_MAP.get(sev_native, "high")
+                counts[sev_cvss] += 1
+
+            # Top 10 ordenados por severidad
+            sev_order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "INFO": 4}
+            failed_checks.sort(key=lambda c: sev_order.get((c.get("severity") or "HIGH").upper(), 99))
+
+            top = []
+            for c in failed_checks[:10]:
+                sev_native = (c.get("severity") or "HIGH").upper()
+                line_range = c.get("file_line_range", ["?","?"])
+                line_str   = f"{line_range[0]}-{line_range[1]}" if isinstance(line_range, list) and len(line_range) == 2 else "?"
+                top.append({
+                    "tool":        "checkov",
+                    "severity":    SEV_MAP.get(sev_native, "high"),
+                    "rule_id":     c.get("check_id", "?"),
+                    "location":    f"{c.get('file_path','?')}:{line_str}",
+                    "description": str(c.get("check_name", ""))[:200],
+                })
+
+            blocked = counts["critical"] > 0 or counts["high"] > 0 or counts["medium"] > 0
+            reason  = ""
+            if blocked:
+                parts = []
+                for sev in ("critical", "high", "medium"):
+                    if counts[sev]:
+                        parts.append(f"{counts[sev]} {sev}")
+                reason = ", ".join(parts)
+
+            summary = {
+                "schema_version":         "1.0",
+                "workflow":               "sec-iac-terraform",
+                "workflow_display_name":  "IaC Security (Terraform)",
+                "stage_number":           5,
+                "tools":                  ["checkov"],
+                "scan_status":            scan_status,
+                "scan_status_reason":     scan_reason,
+                "severity_counts":        counts,
+                "top_findings":           top,
+                "workflow_blocked":       blocked,
+                "block_reason":           reason,
+            }
+
+            out_path = f"reports/{repo_name}/qg-summary-sec-iac-terraform.json"
+            with open(out_path, "w", encoding="utf-8") as fh:
+                json.dump(summary, fh, indent=2, ensure_ascii=False)
+            print(f"[qg-summary] sec-iac-terraform → {counts} blocked={blocked} status={scan_status}")
+        run: python3 -c "$PYTHON_SCRIPT"
+
+      - name: Subir reporte HTML + JSON raw
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: security-iac-checkov
-          path: reports/${{ github.event.repository.name }}/
+          path: |
+            reports/${{ github.event.repository.name }}/checkov-report.html
+            reports/checkov-raw.json
           retention-days: 30
           if-no-files-found: warn
 
-      - name: Crear Issues en GitHub (Checkov - Límite 10)
+      - name: Subir qg-summary (input para Quality Gate consolidador)
         if: always()
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          cat << 'EOF' > create_issues_checkov.py
-          import json, os, subprocess
+        uses: actions/upload-artifact@v4
+        with:
+          name: qg-summary-sec-iac-terraform
+          path: reports/${{ github.event.repository.name }}/qg-summary-sec-iac-terraform.json
+          retention-days: 30
+          if-no-files-found: warn
 
-          raw_path = 'reports/checkov-raw.json'
-          if not os.path.exists(raw_path):
-              exit(0)
-
-          try:
-              data = json.load(open(raw_path, encoding='utf-8'))
-              
-              # Checkov puede devolver una lista o un diccionario dependiendo de si escanea 1 o más frameworks
-              reports = data if isinstance(data, list) else [data]
-              
-              failed_checks = []
-              for rep in reports:
-                  if 'results' in rep and 'failed_checks' in rep['results']:
-                      failed_checks.extend(rep['results']['failed_checks'])
-          except Exception as e:
-              print(f"[Issues Checkov] Error procesando JSON: {e}")
-              exit(0)
-
-          # 1. Obtener lista de issues abiertos para NO duplicar
-          try:
-              cmd_list = ['gh', 'issue', 'list', '--state', 'open', '--json', 'title']
-              existing_titles = [i['title'] for i in json.loads(subprocess.check_output(cmd_list).decode('utf-8'))]
-          except:
-              existing_titles = []
-
-          MAX_ISSUES = 10
-          creados = 0
-
-          # 2. Recorrer hallazgos y crear issues
-          for check in failed_checks:
-              if creados >= MAX_ISSUES:
-                  break
-                  
-              check_id = check.get('check_id', 'unknown')
-              check_name = check.get('check_name', 'Sin descripción')
-              file_path = check.get('file_path', 'unknown')
-              resource = check.get('resource', 'unknown')
-              
-              # La versión Open Source de Checkov no siempre incluye 'severity' nativamente sin API key.
-              # Si no viene, asumimos HIGH por defecto para requerir atención de arquitectura.
-              sev = check.get('severity') or 'HIGH'
-              
-              title = f"🚨 [IaC] Checkov: {check_id} en {resource}"
-              
-              if title not in existing_titles:
-                  body = (f"### 🏗️ Vulnerabilidad de Infraestructura como Código (Terraform)\n\n"
-                          f"**Herramienta**: Checkov\n"
-                          f"**Severidad**: {sev}\n"
-                          f"**Recurso**: `{resource}`\n"
-                          f"**Archivo**: `{file_path}`\n\n"
-                          f"**Regla**: `{check_id}`\n"
-                          f"**Descripción**:\n> {check_name}\n\n"
-                          f"Revise el código de Terraform para aplicar las mejores prácticas de seguridad en la nube.")
-                  
-                  try:
-                      subprocess.run(['gh', 'issue', 'create', '--title', title, '--body', body], check=True)
-                      existing_titles.append(title)
-                      creados += 1
-                      print(f"[Issues] Creado ticket: {title}")
-                  except:
-                      pass
-
-          print(f"[Issues Checkov] Proceso completado. Tickets nuevos creados: {creados}")
-          EOF
-          
-          python3 create_issues_checkov.py
+      # ════════════════════════════════════════════════════════════════════
+      # DEPRECATED — Creación de Issues directos (Checkov)
+      #
+      # Reemplazado en Fase 2 por el comentario consolidado en PR + step
+      # summary + artifact JSON, orquestado desde quality-gate-consolidated
+      # en el seguridad.yml del consumidor.
+      # ════════════════════════════════════════════════════════════════════
+      # - name: Crear Issues en GitHub (Checkov - Límite 10)
+      #   if: always()
+      #   continue-on-error: true
+      #   env:
+      #     GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      #   run: |
+      #     cat << 'EOF' > create_issues_checkov.py
+      #     import json, os, subprocess
+      #     raw_path = 'reports/checkov-raw.json'
+      #     if not os.path.exists(raw_path):
+      #         exit(0)
+      #     try:
+      #         data = json.load(open(raw_path, encoding='utf-8'))
+      #         reports = data if isinstance(data, list) else [data]
+      #         failed_checks = []
+      #         for rep in reports:
+      #             if 'results' in rep and 'failed_checks' in rep['results']:
+      #                 failed_checks.extend(rep['results']['failed_checks'])
+      #     except Exception:
+      #         exit(0)
+      #     try:
+      #         cmd_list = ['gh', 'issue', 'list', '--state', 'open', '--json', 'title']
+      #         existing_titles = [i['title'] for i in json.loads(subprocess.check_output(cmd_list).decode('utf-8'))]
+      #     except Exception:
+      #         existing_titles = []
+      #     MAX_ISSUES = 10
+      #     creados = 0
+      #     for check in failed_checks:
+      #         if creados >= MAX_ISSUES:
+      #             break
+      #         check_id   = check.get('check_id', 'unknown')
+      #         check_name = check.get('check_name', 'Sin descripción')
+      #         file_path  = check.get('file_path', 'unknown')
+      #         resource   = check.get('resource', 'unknown')
+      #         sev        = check.get('severity') or 'HIGH'
+      #         title = f"🚨 [IaC] Checkov: {check_id} en {resource}"
+      #         if title not in existing_titles:
+      #             body = (f"### 🏗️ IaC vuln\n\n**Tool**: Checkov\n**Sev**: {sev}\n"
+      #                     f"**Resource**: `{resource}`\n**File**: `{file_path}`\n"
+      #                     f"**Rule**: `{check_id}`\n> {check_name}")
+      #             try:
+      #                 subprocess.run(['gh', 'issue', 'create', '--title', title, '--body', body], check=True)
+      #                 existing_titles.append(title)
+      #                 creados += 1
+      #             except Exception:
+      #                 pass
+      #     print(f"[Issues Checkov] Creados: {creados}")
+      #     EOF
+      #     python3 create_issues_checkov.py

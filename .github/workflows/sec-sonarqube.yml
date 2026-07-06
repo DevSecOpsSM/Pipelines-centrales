@@ -829,8 +829,6 @@ jobs:
                 .header h1{{font-size:26px;font-weight:700;color:#FFFFFF;margin-top:16px}}
                 .meta{{color:#B0B0B0;font-size:13px;margin-top:10px}}
                 .meta span{{margin-right:20px}}
-                .btn-pdf{{position:absolute;top:40px;right:40px;background:#00F1C7;color:#000000;font-weight:bold;padding:10px 20px;border:none;border-radius:6px;cursor:pointer;font-size:14px}}
-                .btn-pdf:hover{{background:#00c4a0}}
                 .container{{max-width:1200px;margin:0 auto;padding:30px}}
                 .status-badge{{display:inline-block;padding:10px 24px;border-radius:8px;font-size:15px;font-weight:700;border:1px solid {mbd};background:{mb};color:{mc};margin-bottom:24px}}
                 .section{{margin-bottom:30px}}
@@ -850,7 +848,20 @@ jobs:
                 .langs{{display:flex;flex-wrap:wrap;gap:8px}}
                 .lang-chip{{background:rgba(0,241,199,0.08);border:1px solid #00F1C7;color:#00F1C7;padding:5px 12px;border-radius:14px;font-size:12px;font-weight:600}}
                 .footer{{text-align:center;padding:30px;color:#888888;font-size:12px;border-top:1px solid #373737;margin-top:20px}}
-                @media print{{body{{background:#FFF !important;color:#000 !important}}.header{{background:#FFF !important}}.header h1{{color:#000 !important}}.btn-pdf{{display:none !important}}.card,table,.info-box{{background:#FFF !important;border:1px solid #ccc !important}}td,th{{color:#000 !important}}}}
+                .btn-pdf{{position:absolute;top:40px;right:40px;background:#00F1C7;color:#000000;font-weight:bold;padding:10px 20px;border:none;border-radius:6px;cursor:pointer;font-size:14px;transition:0.2s}}
+                .btn-pdf:hover{{background:#00c4a0}}
+                @media print{{
+                  @page{{margin:1.5cm;size:auto}}
+                  body{{background:#FFFFFF !important;color:#000000 !important;-webkit-print-color-adjust:exact !important;print-color-adjust:exact !important}}
+                  .header{{background:#FFFFFF !important;border-bottom:2px solid #00F1C7 !important;padding:20px 0}}
+                  .header h1{{color:#000000 !important}}
+                  .btn-pdf{{display:none !important}}
+                  .card,table,.info-box{{background:#FFFFFF !important;border:1px solid #D1D1D1 !important;page-break-inside:avoid}}
+                  td,th{{color:#1A1A1A !important;padding:10px;border-bottom:1px solid #E7E7E7 !important}}
+                  thead{{display:table-header-group;background:#F6F6F6 !important}}
+                  tr{{page-break-inside:avoid}}
+                  .lang-chip{{background:#F6F6F6 !important;color:#333 !important;border:1px solid #CCC !important}}
+                }}
               </style>
             </head>
             <body>
@@ -926,11 +937,153 @@ jobs:
             print(f"[SonarQube] reporte generado: {out_path}")
         run: python3 -c "$PYTHON_SCRIPT"
 
-      - name: Subir reporte
+      # ────────────────────────────────────────────────────────────────────
+      # Quality Gate — Generar qg-summary normalizado (CVSSv3)
+      #
+      # Mapeo SonarQube → CVSSv3:
+      #   BLOCKER  → critical
+      #   CRITICAL → high
+      #   MAJOR    → medium
+      #   MINOR    → low
+      #   INFO     → info
+      #
+      # Security hotspots se cuentan como `high` (potencialmente explotables).
+      # Si SonarQube QG nativa = ERROR → workflow_blocked = true incondicional.
+      # Si no hubo scan (SONAR_TOKEN missing, server unreachable) → status=skipped.
+      # ────────────────────────────────────────────────────────────────────
+      - name: Generar qg-summary-sec-sonarqube.json
+        if: always()
+        env:
+          REPO_NAME: ${{ github.event.repository.name }}
+          SCAN_OK:   ${{ steps.scan.outputs.scan_ok }}
+          PYTHON_SCRIPT: |
+            import json, os
+
+            repo_name = os.environ['REPO_NAME']
+            scan_ok   = os.environ.get('SCAN_OK', 'false') == 'true'
+
+            counts = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
+            top    = []
+            scan_status = "completed" if scan_ok else "skipped"
+            scan_reason = "" if scan_ok else "sonar-scanner no se ejecutó (sin token, server inalcanzable o sin código)"
+            blocked     = False
+            reason      = ""
+
+            issues_path   = "reports/sonar-issues.json"
+            hotspots_path = "reports/sonar-hotspots.json"
+            qg_path       = "reports/sonar-qg.json"
+
+            SEV_SONAR = {"BLOCKER":"critical","CRITICAL":"high","MAJOR":"medium","MINOR":"low","INFO":"info"}
+
+            # ── Issues (bugs + vulnerabilities + code smells) ───────────
+            issues = []
+            if os.path.exists(issues_path):
+                try:
+                    data = json.load(open(issues_path, encoding="utf-8"))
+                    issues = data.get("issues", []) or []
+                    for it in issues:
+                        sev_native = (it.get("severity") or "MINOR").upper()
+                        counts[SEV_SONAR.get(sev_native, "low")] += 1
+                except Exception as e:
+                    print(f"[Sonar] Error leyendo issues: {e}")
+
+            # ── Security hotspots → high ────────────────────────────────
+            hotspots = []
+            if os.path.exists(hotspots_path):
+                try:
+                    data = json.load(open(hotspots_path, encoding="utf-8"))
+                    hotspots = data.get("hotspots", []) or []
+                    counts["high"] += len(hotspots)
+                except Exception as e:
+                    print(f"[Sonar] Error leyendo hotspots: {e}")
+
+            # ── Top 10 findings (issues ordenados por severidad nativa) ─
+            sev_order = {"BLOCKER":0,"CRITICAL":1,"MAJOR":2,"MINOR":3,"INFO":4}
+            issues_sorted = sorted(issues, key=lambda x: sev_order.get((x.get("severity") or "MINOR").upper(), 99))
+            for it in issues_sorted[:8]:
+                sev_native = (it.get("severity") or "MINOR").upper()
+                top.append({
+                    "tool":        "sonarqube",
+                    "severity":    SEV_SONAR.get(sev_native, "low"),
+                    "rule_id":     str(it.get("rule", "?")),
+                    "location":    f"{it.get('component','?')}:{it.get('line','?')}",
+                    "description": str(it.get("message", ""))[:200],
+                })
+            # Add hotspots (max 2) as high
+            for h in hotspots[:2]:
+                top.append({
+                    "tool":        "sonarqube",
+                    "severity":    "high",
+                    "rule_id":     str(h.get("ruleKey", "?")),
+                    "location":    f"{h.get('component','?')}:{h.get('line','?')}",
+                    "description": f"[Security Hotspot] {str(h.get('message',''))[:180]}",
+                })
+
+            # ── SonarQube native Quality Gate ───────────────────────────
+            qg_native_status = "NONE"
+            if os.path.exists(qg_path):
+                try:
+                    qg = json.load(open(qg_path, encoding="utf-8"))
+                    qg_native_status = (qg.get("projectStatus", {}).get("status") or "NONE").upper()
+                except Exception:
+                    pass
+
+            # ── Decisión ────────────────────────────────────────────────
+            if scan_ok:
+                blocked = counts["critical"] > 0 or counts["high"] > 0 or counts["medium"] > 0
+                if qg_native_status == "ERROR":
+                    blocked = True
+                if blocked:
+                    parts = []
+                    for sev in ("critical", "high", "medium"):
+                        if counts[sev]:
+                            parts.append(f"{counts[sev]} {sev}")
+                    if qg_native_status == "ERROR":
+                        parts.append("SonarQube QG nativa = ERROR")
+                    reason = ", ".join(parts)
+
+            summary = {
+                "schema_version":         "1.0",
+                "workflow":               "sec-sonarqube",
+                "workflow_display_name":  "SonarQube (SAST + Coverage)",
+                "stage_number":           7,
+                "tools":                  ["sonarqube"],
+                "scan_status":            scan_status,
+                "scan_status_reason":     scan_reason,
+                "severity_counts":        counts,
+                "top_findings":           top,
+                "workflow_blocked":       blocked,
+                "block_reason":           reason,
+                "sonarqube_qg_native":    qg_native_status,
+            }
+
+            out_dir  = f"reports/{repo_name}"
+            os.makedirs(out_dir, exist_ok=True)
+            out_path = f"{out_dir}/qg-summary-sec-sonarqube.json"
+            with open(out_path, "w", encoding="utf-8") as fh:
+                json.dump(summary, fh, indent=2, ensure_ascii=False)
+            print(f"[qg-summary] sec-sonarqube → {counts} blocked={blocked} qg_native={qg_native_status}")
+        run: python3 -c "$PYTHON_SCRIPT"
+
+      - name: Subir reporte HTML + JSONs raw de SonarQube
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: security-sonarqube-report
-          path: reports/${{ github.event.repository.name }}/
+          path: |
+            reports/${{ github.event.repository.name }}/sonarqube-report.html
+            reports/sonar-issues.json
+            reports/sonar-hotspots.json
+            reports/sonar-qg.json
+            reports/sonar-measures.json
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Subir qg-summary (input para Quality Gate consolidador)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qg-summary-sec-sonarqube
+          path: reports/${{ github.event.repository.name }}/qg-summary-sec-sonarqube.json
           retention-days: 30
           if-no-files-found: warn

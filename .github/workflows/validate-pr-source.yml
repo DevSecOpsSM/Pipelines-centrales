@@ -1,0 +1,225 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# Validate PR Source Branch — Enforce branch model SIMON DevOps
+#
+# Modelo de ramas estricto:
+#
+#       feature/*  ─┐
+#       fix/*       │
+#       chore/*     │
+#       docs/*      ├──▶ develop ──▶ uat ──▶ main
+#       refactor/*  │    (integ)    (stage)  (prod)
+#       perf/*      │
+#       ci/*        │
+#       test/*      │
+#       style/*    ─┘
+#
+# Reglas que se aplican:
+#   • PR a `main`     ⇒ SOLO desde `uat`
+#   • PR a `uat`      ⇒ SOLO desde `develop`
+#   • PR a `develop`  ⇒ SOLO desde prefijos de Conventional Commits:
+#                       feature/*, fix/*, chore/*, docs/*, refactor/*,
+#                       perf/*, ci/*, test/*, style/*
+#   • Cualquier otra combinación ⇒ FALLA con mensaje explicativo
+#
+# Este workflow es disparado por GitHub en cada PR a las ramas protegidas.
+# Configurar como required check en branch protection rules.
+# ═══════════════════════════════════════════════════════════════════════════
+
+name: Validate PR Source Branch
+
+on:
+  pull_request:
+    branches:
+      - main
+      - uat
+      - develop
+    types: [opened, reopened, edited, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: write   # Necesario para comentar en el PR si la validación falla
+
+jobs:
+  validate-source:
+    name: "Validar rama origen del PR"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Evaluar relación source → target
+        id: validate
+        env:
+          TARGET: ${{ github.base_ref }}
+          SOURCE: ${{ github.head_ref }}
+        run: |
+          echo "════════════════════════════════════════════════════════════"
+          echo " Validate PR Source — Branch Model Enforcement"
+          echo "════════════════════════════════════════════════════════════"
+          echo " Source branch: $SOURCE"
+          echo " Target branch: $TARGET"
+          echo "════════════════════════════════════════════════════════════"
+
+          VALID=false
+          REASON=""
+
+          case "$TARGET" in
+            main)
+              if [ "$SOURCE" = "uat" ]; then
+                VALID=true
+              else
+                REASON="PR a 'main' solo se permite desde 'uat'. Recibido: '$SOURCE'."
+              fi
+              ;;
+            uat)
+              if [ "$SOURCE" = "develop" ]; then
+                VALID=true
+              else
+                REASON="PR a 'uat' solo se permite desde 'develop'. Recibido: '$SOURCE'."
+              fi
+              ;;
+            develop)
+              # Aceptamos todos los prefijos de Conventional Commits como ramas source
+              # válidas contra develop. Esto cubre feature/fix + tareas cotidianas
+              # (chore, docs, refactor, perf, ci, test) sin que el enforce se convierta
+              # en fricción para trabajo no-feature.
+              case "$SOURCE" in
+                feature/*|fix/*|chore/*|docs/*|refactor/*|perf/*|ci/*|test/*|style/*)
+                  VALID=true
+                  ;;
+                *)
+                  REASON="PR a 'develop' requiere una rama con prefijo Conventional Commits: 'feature/', 'fix/', 'chore/', 'docs/', 'refactor/', 'perf/', 'ci/', 'test/' o 'style/'. Recibido: '$SOURCE'."
+                  ;;
+              esac
+              ;;
+            *)
+              VALID=true
+              REASON="Rama target '$TARGET' no controlada por este enforce; se permite."
+              ;;
+          esac
+
+          {
+            echo "valid=$VALID"
+            echo "target=$TARGET"
+            echo "source=$SOURCE"
+          } >> "$GITHUB_OUTPUT"
+
+          # Escribir reason multilínea de forma segura
+          {
+            echo "reason<<EOF_REASON"
+            echo "$REASON"
+            echo "EOF_REASON"
+          } >> "$GITHUB_OUTPUT"
+
+          if [ "$VALID" = "true" ]; then
+            echo ""
+            echo "✅ Flujo válido: $SOURCE → $TARGET"
+          else
+            echo ""
+            echo "❌ Flujo inválido: $REASON"
+          fi
+
+      - name: Generar Step Summary
+        if: always()
+        env:
+          VALID: ${{ steps.validate.outputs.valid }}
+          SOURCE: ${{ steps.validate.outputs.source }}
+          TARGET: ${{ steps.validate.outputs.target }}
+          REASON: ${{ steps.validate.outputs.reason }}
+        run: |
+          if [ "$VALID" = "true" ]; then
+            ICON="✅"
+            STATUS="Aprobado"
+          else
+            ICON="❌"
+            STATUS="Rechazado"
+          fi
+
+          {
+            echo "## $ICON Validación de Branch Model — $STATUS"
+            echo ""
+            echo "| Campo | Valor |"
+            echo "|-------|-------|"
+            echo "| Rama origen | \`$SOURCE\` |"
+            echo "| Rama destino | \`$TARGET\` |"
+            echo "| Estado | $STATUS |"
+            echo ""
+            if [ "$VALID" != "true" ]; then
+              echo "### Razón del rechazo"
+              echo ""
+              echo "> $REASON"
+              echo ""
+              echo "### Modelo de ramas válido"
+              echo ""
+              echo '```'
+              echo 'feature/*   ─┐'
+              echo 'fix/*        │'
+              echo 'chore/*      │'
+              echo 'docs/*       ├──▶ develop ──▶ uat ──▶ main'
+              echo 'refactor/*   │'
+              echo 'perf/*  ci/* │'
+              echo 'test/*  style/*┘'
+              echo '```'
+              echo ""
+              echo "Ajusta la rama origen del PR o redirige a la rama destino correcta."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Comentar en el PR si la validación falla
+        if: steps.validate.outputs.valid != 'true'
+        uses: actions/github-script@v8
+        env:
+          SOURCE: ${{ steps.validate.outputs.source }}
+          TARGET: ${{ steps.validate.outputs.target }}
+          REASON: ${{ steps.validate.outputs.reason }}
+        with:
+          script: |
+            const { SOURCE, TARGET, REASON } = process.env;
+            const marker = '<!-- validate-pr-source-marker -->';
+            const body = [
+              marker,
+              '## ❌ Branch Model — PR rechazado',
+              '',
+              `**Rama origen:** \`${SOURCE}\``,
+              `**Rama destino:** \`${TARGET}\``,
+              '',
+              `> ${REASON}`,
+              '',
+              '### Modelo de ramas válido',
+              '```',
+              'feature/*   ─┐',
+              'fix/*        │',
+              'chore/*      │',
+              'docs/*       ├──▶ develop ──▶ uat ──▶ main',
+              'refactor/*   │',
+              'perf/*  ci/* │',
+              'test/*  style/*┘',
+              '```',
+              '',
+              '_Ajusta la rama origen del PR o redirige a la rama destino correcta._',
+              '',
+              '_— pipelines-centrales · validate-pr-source_',
+            ].join('\n');
+
+            const { owner, repo } = context.repo;
+            const issue_number = context.payload.pull_request.number;
+
+            // Buscar comentario previo del bot (sticky)
+            const { data: comments } = await github.rest.issues.listComments({
+              owner, repo, issue_number, per_page: 100,
+            });
+            const previous = comments.find(c => c.body && c.body.includes(marker));
+
+            if (previous) {
+              await github.rest.issues.updateComment({
+                owner, repo, comment_id: previous.id, body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner, repo, issue_number, body,
+              });
+            }
+
+      - name: Fallar el job si la validación no pasó
+        if: steps.validate.outputs.valid != 'true'
+        run: |
+          echo "::error title=Branch Model Violation::${{ steps.validate.outputs.reason }}"
+          exit 1

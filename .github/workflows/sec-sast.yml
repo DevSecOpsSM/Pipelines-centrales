@@ -1,8 +1,17 @@
 # ═══════════════════════════════════════════════════════════════════════════
-# SSDLC · Etapa 2 — SAST (Static Application Security Testing)
+# SSDLC · Etapa 3 — SAST (Static Application Security Testing)
+#
 # Herramienta: Semgrep — OWASP Top 10 + Secrets + CI rules
-# Modo Auditoría: reporta hallazgos sin bloquear el pipeline
-# Universal: funciona con cualquier lenguaje de programación
+# Universal: cobertura multi-lenguaje (Python, JS/TS, Java, Go, PHP, Ruby,
+# C/C++, Kotlin, Swift, etc.)
+#
+# Mapeo CVSSv3 (Semgrep severity nativa → escala normalizada):
+#   - ERROR    → high
+#   - WARNING  → medium
+#   - INFO     → low
+#
+# Modo Auditoría: continue-on-error en el scan. La decisión final la toma el
+# consolidador en el `seguridad.yml` del repo consumidor.
 # ═══════════════════════════════════════════════════════════════════════════
 
 name: Security - SAST (Semgrep)
@@ -16,7 +25,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      issues: write
 
     steps:
       - name: Checkout repositorio
@@ -28,20 +36,46 @@ jobs:
       - name: Instalar Semgrep
         run: pip install semgrep --quiet
 
-      - name: Ejecutar Semgrep — Seguridad + Calidad (OWASP, Secrets, CI, Default)
+      - name: Ejecutar Semgrep — OWASP Top 10 + Secrets + CI
         continue-on-error: true
         run: |
+          # Excluir paths que NO son código de aplicación:
+          #   - .github/       CI/CD workflows (analizado por sec-containers/KICS aparte)
+          #   - .git/          internals de git
+          #   - .pipelines-centrales/  checkout del repo central (workflows del consumer)
+          #   - node_modules/, vendor/  dependencias (analizadas por sec-sca)
+          #   - .venv/, venv/  entornos virtuales Python
+          #   - dist/, build/, target/  outputs de build
+          #   - reports/       nuestros propios reportes (evita bucles)
           semgrep scan \
             --config p/owasp-top-ten \
             --config p/secrets \
             --config p/ci \
+            --config p/golang \
+            --config p/gosec \
+            --config p/security-audit \
+            --config p/r2c-security-audit \
+            --config p/insecure-transport \
+            --exclude=.github \
+            --exclude=.git \
+            --exclude=.pipelines-centrales \
+            --exclude=node_modules \
+            --exclude=vendor \
+            --exclude=.venv \
+            --exclude=venv \
+            --exclude=dist \
+            --exclude=build \
+            --exclude=target \
+            --exclude=reports \
+            --exclude='*.min.js' \
+            --exclude='*.min.css' \
             --json \
             --output reports/semgrep-raw.json \
             --timeout 300 \
             --max-memory 1500 \
             . || true
 
-          # Garantizar archivo JSON válido si Semgrep no produjo salida
+          # Garantizar JSON válido si Semgrep no produjo salida
           if [ ! -s reports/semgrep-raw.json ]; then
             echo '{"results":[],"errors":[],"version":"0"}' > reports/semgrep-raw.json
           fi
@@ -51,8 +85,8 @@ jobs:
         env:
           REPO_NAME: ${{ github.event.repository.name }}
           REPO_FULL: ${{ github.repository }}
-          SHA: ${{ github.sha }}
-          REF: ${{ github.ref_name }}
+          SHA:       ${{ github.sha }}
+          REF:       ${{ github.ref_name }}
           PYTHON_SCRIPT: |
             import json, html, os
             from datetime import datetime
@@ -134,7 +168,7 @@ jobs:
                     for e in errors[:20]
                 )
                 error_block = f"""
-                <div class="section" style="page-break-before: always;">
+                <div class="section">
                   <div class="section-title" style="color:#d29922">Advertencias de Semgrep ({len(errors)})</div>
                   <div class="findings-wrap" style="padding:20px">
                     <ul style="font-size:13px;color:#8b949e;line-height:1.8">{err_items}</ul>
@@ -145,7 +179,7 @@ jobs:
               <div class="no-findings">
                 <div class="no-findings-icon">✅</div>
                 <h3>Sin hallazgos</h3>
-                <p>Semgrep analizó el código con las reglas OWASP Top 10, Secrets, CI y Calidad sin encontrar problemas.</p>
+                <p>Semgrep analizó el código con OWASP Top 10, Secrets y CI sin encontrar problemas.</p>
               </div>"""
 
             table = f"""
@@ -181,8 +215,6 @@ jobs:
                 .header h1{{font-size:26px;font-weight:700;color:#FFFFFF;margin-top:16px}}
                 .meta{{color:#B0B0B0;font-size:13px;margin-top:10px}}
                 .meta span{{margin-right:20px}}
-                .btn-pdf{{position:absolute;top:40px;right:40px;background:#00F1C7;color:#000000;font-weight:bold;padding:10px 20px;border:none;border-radius:6px;cursor:pointer;font-size:14px;transition:0.2s}}
-                .btn-pdf:hover{{background:#00c4a0}}
                 .cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:16px;padding:30px;max-width:1100px;margin:0 auto}}
                 .card{{background:#373737;border-radius:8px;padding:20px;text-align:center;border-top:4px solid}}
                 .card-total{{border-top-color:#B0B0B0}}
@@ -195,10 +227,8 @@ jobs:
                 .section{{max-width:1100px;margin:0 auto 30px;padding:0 30px}}
                 .section-title{{font-size:16px;font-weight:600;color:#00F1C7;margin-bottom:14px;padding-bottom:8px;border-bottom:1px solid #373737}}
                 .wrap,.findings-wrap{{background:#000000;border:1px solid #373737;border-radius:8px;overflow:hidden}}
-                
                 table{{width:100%;border-collapse:collapse;table-layout:fixed}}
                 .col-sev{{width:12%}} .col-rule{{width:20%}} .col-file{{width:28%}} .col-desc{{width:40%}}
-                
                 thead{{background:#373737}}
                 th{{padding:14px 16px;color:#E7E7E7;font-size:12px;text-transform:uppercase;text-align:left;letter-spacing:0.5px}}
                 td{{padding:14px 16px;border-bottom:1px solid #373737;font-size:13px;vertical-align:top;color:#D1D1D1;word-wrap:break-word}}
@@ -216,42 +246,30 @@ jobs:
                 .no-findings h3{{font-size:20px;color:#4EDA56;margin-bottom:8px}}
                 .no-findings p{{color:#B0B0B0}}
                 .footer{{text-align:center;padding:30px;color:#888888;font-size:12px;border-top:1px solid #373737;margin-top:20px}}
-                
-                /* ========================================================================= */
-                /* REGLAS ESPECÍFICAS PARA IMPRESIÓN (PDF)                                   */
-                /* ========================================================================= */
-                @media print {{
-                  @page {{ margin: 1.5cm; size: auto; }}
-                  body {{ 
-                    background: #FFFFFF !important; 
-                    color: #000000 !important; 
-                    -webkit-print-color-adjust: exact !important; 
-                    print-color-adjust: exact !important; 
-                  }}
-                  .header {{ background: #FFFFFF !important; border-bottom: 2px solid #00F1C7 !important; padding: 20px 0; }}
-                  .header h1 {{ color: #000000 !important; }}
-                  .btn-pdf {{ display: none !important; }}
-                  .cards {{ padding: 15px 0; gap: 10px; }}
-                  .card {{ background: #F6F6F6 !important; border: 1px solid #D1D1D1 !important; border-top: 4px solid !important; padding: 15px; page-break-inside: avoid; }}
-                  .num-total {{ color: #1A1A1A !important; }}
-                  .section {{ padding: 0; }}
-                  .rules-info {{ border: 1px solid #D1D1D1 !important; background: #F6F6F6 !important; color: #333 !important; page-break-inside: avoid; }}
-                  .rules-info strong {{ color: #000 !important; }}
-                  .wrap, .findings-wrap {{ border: 1px solid #D1D1D1 !important; background: #FFFFFF !important; }}
-                  
-                  /* Control estricto de la tabla para evitar rupturas */
-                  table {{ table-layout: fixed; width: 100%; }}
-                  thead {{ display: table-header-group; background: #F6F6F6 !important; }}
-                  tr {{ page-break-inside: avoid; page-break-after: auto; }}
-                  td {{ border-bottom: 1px solid #E7E7E7 !important; color: #1A1A1A !important; padding: 10px; vertical-align: middle; }}
-                  th {{ color: #373737 !important; border-bottom: 2px solid #D1D1D1 !important; padding: 10px; }}
-                  
-                  /* Arreglo de los badges y códigos en fondo blanco */
-                  .badge {{ border: none !important; padding: 4px 8px; font-size: 10px; }}
-                  .badge-critical {{ background: #F63D3D !important; color: #FFFFFF !important; }}
-                  .badge-high {{ background: #FAD900 !important; color: #000000 !important; }}
-                  .badge-medium {{ background: #00F1C7 !important; color: #000000 !important; }}
-                  .rule {{ background: #E7E7E7 !important; color: #000 !important; border: 1px solid #CCC !important; }}
+                .btn-pdf{{position:absolute;top:40px;right:40px;background:#00F1C7;color:#000000;font-weight:bold;padding:10px 20px;border:none;border-radius:6px;cursor:pointer;font-size:14px;transition:0.2s}}
+                .btn-pdf:hover{{background:#00c4a0}}
+                @media print{{
+                  @page{{margin:1.5cm;size:auto}}
+                  body{{background:#FFFFFF !important;color:#000000 !important;-webkit-print-color-adjust:exact !important;print-color-adjust:exact !important}}
+                  .header{{background:#FFFFFF !important;border-bottom:2px solid #00F1C7 !important;padding:20px 0}}
+                  .header h1{{color:#000000 !important}}
+                  .btn-pdf{{display:none !important}}
+                  .cards{{padding:15px 0;gap:10px}}
+                  .card{{background:#F6F6F6 !important;border:1px solid #D1D1D1 !important;border-top:4px solid !important;padding:15px;page-break-inside:avoid}}
+                  .num-total{{color:#1A1A1A !important}}
+                  .rules-info{{border:1px solid #D1D1D1 !important;background:#F6F6F6 !important;color:#333 !important;page-break-inside:avoid}}
+                  .rules-info strong{{color:#000 !important}}
+                  .wrap,.findings-wrap{{border:1px solid #D1D1D1 !important;background:#FFFFFF !important}}
+                  table{{table-layout:fixed;width:100%}}
+                  thead{{display:table-header-group;background:#F6F6F6 !important}}
+                  tr{{page-break-inside:avoid;page-break-after:auto}}
+                  td{{border-bottom:1px solid #E7E7E7 !important;color:#1A1A1A !important;padding:10px;vertical-align:middle}}
+                  th{{color:#373737 !important;border-bottom:2px solid #D1D1D1 !important;padding:10px}}
+                  .badge{{border:none !important;padding:4px 8px;font-size:10px}}
+                  .badge-critical{{background:#F63D3D !important;color:#FFFFFF !important}}
+                  .badge-high{{background:#FAD900 !important;color:#000000 !important}}
+                  .badge-medium{{background:#00F1C7 !important;color:#000000 !important}}
+                  .rule{{background:#E7E7E7 !important;color:#000 !important;border:1px solid #CCC !important}}
                 }}
               </style>
             </head>
@@ -274,7 +292,8 @@ jobs:
                 <div class="card card-warning"><div class="card-num num-warning">{counts.get("WARNING", 0)}</div><div class="card-label">Warning</div></div>
                 <div class="card card-info"><div class="card-num num-info">{counts.get("INFO", 0)}</div><div class="card-label">Info</div></div>
               </div>
-              <div class="rules-info">
+              <div class="section">
+                <div class="rules-info">
                   Reglas aplicadas: <strong>p/owasp-top-ten</strong> · <strong>p/secrets</strong> · <strong>p/ci</strong>
                   — Cobertura multi-lenguaje (Python, JS/TS, Java, Go, PHP, Ruby, C/C++, Kotlin, Swift y más)
                 </div>
@@ -294,50 +313,138 @@ jobs:
           pip install deep-translator --quiet 2>/dev/null || true
           python3 -c "$PYTHON_SCRIPT"
 
-      - name: Subir reporte
+      # ────────────────────────────────────────────────────────────────────
+      # Quality Gate — Generar qg-summary normalizado (CVSSv3)
+      #
+      # Mapeo Semgrep → CVSSv3:
+      #   ERROR    → high     (problemas serios de seguridad)
+      #   WARNING  → medium   (problemas relevantes pero no críticos)
+      #   INFO     → low      (sugerencias / mejores prácticas)
+      #
+      # workflow_blocked si high > 0 o medium > 0 (consistente con tabla
+      # CVSSv3: High/Medium > 0 bloquea).
+      # ────────────────────────────────────────────────────────────────────
+      - name: Generar qg-summary-sec-sast.json
+        if: always()
+        env:
+          REPO_NAME: ${{ github.event.repository.name }}
+          PYTHON_SCRIPT: |
+            import json, os
+
+            repo_name = os.environ['REPO_NAME']
+            raw_path  = "reports/semgrep-raw.json"
+
+            results = []
+            try:
+                data    = json.load(open(raw_path, encoding="utf-8"))
+                results = data.get("results", [])
+            except Exception:
+                pass
+
+            # Mapeo Semgrep → CVSSv3
+            SEV_MAP = {"ERROR": "high", "WARNING": "medium", "INFO": "low"}
+            counts  = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
+
+            for r in results:
+                sev_native = r.get("extra", {}).get("severity", "INFO").upper()
+                sev_cvss   = SEV_MAP.get(sev_native, "low")
+                counts[sev_cvss] += 1
+
+            # Top 10 ordenados por severidad descendente
+            sev_order = {"ERROR": 0, "WARNING": 1, "INFO": 2}
+            sorted_results = sorted(
+                results,
+                key=lambda r: sev_order.get(r.get("extra", {}).get("severity", "INFO").upper(), 99),
+            )
+
+            top = []
+            for r in sorted_results[:10]:
+                sev_native = r.get("extra", {}).get("severity", "INFO").upper()
+                top.append({
+                    "tool":        "semgrep",
+                    "severity":    SEV_MAP.get(sev_native, "low"),
+                    "rule_id":     r.get("check_id", "?"),
+                    "location":    f"{r.get('path','?')}:{r.get('start',{}).get('line','?')}",
+                    "description": str(r.get("extra", {}).get("message", ""))[:200],
+                })
+
+            blocked = counts["critical"] > 0 or counts["high"] > 0 or counts["medium"] > 0
+            reason  = ""
+            if blocked:
+                parts = []
+                for sev in ("critical", "high", "medium"):
+                    if counts[sev]:
+                        parts.append(f"{counts[sev]} {sev}")
+                reason = ", ".join(parts)
+
+            summary = {
+                "schema_version":         "1.0",
+                "workflow":               "sec-sast",
+                "workflow_display_name":  "SAST",
+                "stage_number":           3,
+                "tools":                  ["semgrep"],
+                "scan_status":            "completed",
+                "scan_status_reason":     "",
+                "severity_counts":        counts,
+                "top_findings":           top,
+                "workflow_blocked":       blocked,
+                "block_reason":           reason,
+            }
+
+            out_path = f"reports/{repo_name}/qg-summary-sec-sast.json"
+            with open(out_path, "w", encoding="utf-8") as fh:
+                json.dump(summary, fh, indent=2, ensure_ascii=False)
+            print(f"[qg-summary] sec-sast → {counts} blocked={blocked}")
+        run: python3 -c "$PYTHON_SCRIPT"
+
+      - name: Subir reporte HTML + JSON raw
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: security-sast-semgrep
-          path: reports/${{ github.event.repository.name }}/
+          path: |
+            reports/${{ github.event.repository.name }}/semgrep-report.html
+            reports/semgrep-raw.json
           retention-days: 30
           if-no-files-found: warn
 
-      - name: Obtener scripts de IA (pipelines-centrales)
+      - name: Subir qg-summary (input para Quality Gate consolidador)
         if: always()
-        run: |
-          mkdir -p .ai-scripts/scripts/ai
-          RAW="https://raw.githubusercontent.com/${{ github.repository_owner }}/pipelines-centrales/main/scripts/ai"
-          curl -fsSL "${RAW}/gemma_client.py"     -o .ai-scripts/scripts/ai/gemma_client.py     || true
-          curl -fsSL "${RAW}/prompt_templates.py" -o .ai-scripts/scripts/ai/prompt_templates.py  || true
+        uses: actions/upload-artifact@v4
+        with:
+          name: qg-summary-sec-sast
+          path: reports/${{ github.event.repository.name }}/qg-summary-sec-sast.json
+          retention-days: 30
+          if-no-files-found: warn
 
-      - name: Crear Issues con Remediación IA — Quality Gate
-        if: always()
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GEMMA_API_KEY: ${{ secrets.GEMMA_API_KEY }}
-          GEMINI_MODEL: "gemini-2.5-flash"
-          QG_SCRIPT: |
-            import json, sys
-            try:
-                data = json.load(open("reports/semgrep-raw.json"))
-                errors = sum(1 for r in data.get("results", [])
-                             if r.get("extra", {}).get("severity", "") == "ERROR")
-                if errors:
-                    print(f"\n QUALITY GATE: {errors} hallazgo(s) ERROR detectado(s).")
-                    print("El pipeline falla para bloquear el pase a produccion.")
-                    sys.exit(1)
-                print("Quality Gate: Sin hallazgos criticos.")
-            except Exception as e:
-                print(f"No se pudo evaluar el quality gate: {e}")
-        run: |
-          SCRIPT=".ai-scripts/scripts/ai/gemma_client.py"
-          if [ ! -f "$SCRIPT" ]; then
-            echo "Scripts de IA no disponibles. Ejecutando Quality Gate basico..."
-            python3 -c "import os; exec(os.environ['QG_SCRIPT'])"
-            exit $?
-          fi
-          pip install requests --quiet
-          python "$SCRIPT" \
-            --tool semgrep \
-            --results reports/semgrep-raw.json
+      # ════════════════════════════════════════════════════════════════════
+      # DEPRECATED — Creación de Issues con remediación IA (Gemma/Gemini)
+      #
+      # Reemplazado en Fase 2 por el comentario consolidado en PR + step
+      # summary + artifact JSON, todo orquestado desde el job
+      # quality-gate-consolidated del seguridad.yml del consumidor.
+      #
+      # Reactivar = descomentar el bloque y re-testear con la API key actual.
+      # ════════════════════════════════════════════════════════════════════
+      # - name: Obtener scripts de IA (pipelines-centrales)
+      #   if: always()
+      #   run: |
+      #     mkdir -p .ai-scripts/scripts/ai
+      #     RAW="https://raw.githubusercontent.com/${{ github.repository_owner }}/pipelines-centrales/main/scripts/ai"
+      #     curl -fsSL "${RAW}/gemma_client.py"     -o .ai-scripts/scripts/ai/gemma_client.py     || true
+      #     curl -fsSL "${RAW}/prompt_templates.py" -o .ai-scripts/scripts/ai/prompt_templates.py || true
+      #
+      # - name: Crear Issues con Remediación IA — Quality Gate
+      #   if: always()
+      #   env:
+      #     GH_TOKEN:      ${{ secrets.GITHUB_TOKEN }}
+      #     GEMMA_API_KEY: ${{ secrets.GEMMA_API_KEY }}
+      #     GEMINI_MODEL:  "gemini-2.5-flash"
+      #   run: |
+      #     SCRIPT=".ai-scripts/scripts/ai/gemma_client.py"
+      #     if [ ! -f "$SCRIPT" ]; then
+      #       echo "Scripts IA no disponibles — omitiendo creación de issues"
+      #       exit 0
+      #     fi
+      #     pip install requests --quiet
+      #     python "$SCRIPT" --tool semgrep --results reports/semgrep-raw.json
