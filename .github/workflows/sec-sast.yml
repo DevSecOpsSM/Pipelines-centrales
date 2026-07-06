@@ -51,6 +51,11 @@ jobs:
             --config p/owasp-top-ten \
             --config p/secrets \
             --config p/ci \
+            --config p/golang \
+            --config p/gosec \
+            --config p/security-audit \
+            --config p/r2c-security-audit \
+            --config p/insecure-transport \
             --exclude=.github \
             --exclude=.git \
             --exclude=.pipelines-centrales \

@@ -26,13 +26,22 @@ jobs:
       - name: Instalar Checkov
         run: pip install checkov --quiet
 
-      - name: Ejecutar Checkov (Exclusivo Terraform)
+      - name: Ejecutar Checkov (IaC multi-framework)
         continue-on-error: true
         run: |
+          # Frameworks explícitos: cubre Terraform, Dockerfile, K8s,
+          # GitHub Actions y detección de secretos en IaC.
+          # NO se usa --framework terraform solo porque filtra a Terraform
+          # y da resource_count=0 en repos que no son 100% IaC.
           checkov -d . \
-            --framework terraform \
+            --framework terraform,dockerfile,kubernetes,github_actions,secrets \
+            --skip-path .git \
+            --skip-path .pipelines-centrales \
+            --skip-path node_modules \
+            --skip-path vendor \
+            --skip-path reports \
             --output json > reports/checkov-raw.json || true
-            
+
           # Garantizar archivo JSON válido si no hay salida
           if [ ! -s reports/checkov-raw.json ]; then
             echo '{"results":{"passed_checks":[],"failed_checks":[]}}' > reports/checkov-raw.json
