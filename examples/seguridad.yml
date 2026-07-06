@@ -221,3 +221,130 @@ jobs:
           fi
           echo "::error title=Quality Gate Error::quality-gate-final.json no fue generado — ¿ningún workflow corrió?"
           exit 1
+
+  # ══════════════════════════════════════════════════════════════════════
+  # BUNDLE ENTREGABLE — consolida PDFs + HTMLs + JSONs + qg-summaries
+  # en un único ZIP `sec-report.zip`.
+  #
+  # Nombres cortos (BUNDLE_DIR = sec-report-{sha7}, artifact name = sec-report)
+  # para no reventar el límite MAX_PATH de 260 chars de Windows cuando el
+  # equipo descomprime el reporte en su máquina.
+  #
+  # Después de crear el ZIP, borra todos los artifacts individuales del run
+  # para dejar como único entregable el bundle consolidado.
+  # ══════════════════════════════════════════════════════════════════════
+  consolidate-artifacts:
+    name: "Consolidar reportes en ZIP entregable"
+    needs: [quality-gate-consolidated]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: DevSecOpsSM/pipelines-centrales
+          ref: main
+          path: .pipelines-centrales
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: all-artifacts/
+          merge-multiple: false
+
+      - name: Preparar JSONs raw para el batch
+        run: |
+          set -e
+          mkdir -p raw-jsons
+          for name in gitleaks-raw.json semgrep-raw.json dependency-check-report.json \
+                     checkov-raw.json kics-results.json hadolint-raw.json \
+                     trivy-raw.json sonar-issues.json; do
+            find all-artifacts -name "$name" -exec cp {} raw-jsons/ \; 2>/dev/null || true
+          done
+          echo "=== JSONs recolectados ==="
+          ls -la raw-jsons/ 2>/dev/null || echo "(vacío)"
+
+      - name: Instalar reportlab
+        run: pip install --quiet reportlab
+
+      - name: Ejecutar batch_generate_reports.py
+        run: |
+          mkdir -p pdfs
+          python3 .pipelines-centrales/report-templates/batch_generate_reports.py \
+            --input-dir raw-jsons --output-dir pdfs \
+            --repo "${{ github.repository }}" --sha "${{ github.sha }}"
+
+      - name: Preparar bundle ZIP
+        run: |
+          set -e
+          # ─────────────────────────────────────────────────────────────
+          # Nombres cortos para no reventar MAX_PATH de Windows (260).
+          # Antes: security-analysis-{repo-full}-{branch}  →  70+ chars
+          # Ahora: sec-report-{sha7}                       →  18 chars
+          # El nombre completo del repo y la rama van en el README interno,
+          # no en el path — así conservamos trazabilidad sin arruinar la
+          # descompresión en Windows.
+          # ─────────────────────────────────────────────────────────────
+          SHA_SHORT="${GITHUB_SHA:0:7}"
+          BUNDLE_DIR="sec-report-${SHA_SHORT}"
+          echo "BUNDLE_DIR=$BUNDLE_DIR" >> "$GITHUB_ENV"
+
+          mkdir -p "$BUNDLE_DIR"/{01-pdf-ejecutivo,02-pdf-individuales,03-html-reports,04-raw-json,05-qg-summary}
+
+          [ -f pdfs/01-executive-summary.pdf ] && cp pdfs/01-executive-summary.pdf "$BUNDLE_DIR/01-pdf-ejecutivo/"
+          find pdfs -name "0[2-9]-*.pdf" -exec cp {} "$BUNDLE_DIR/02-pdf-individuales/" \; 2>/dev/null || true
+          find all-artifacts -name "*.html" -exec cp {} "$BUNDLE_DIR/03-html-reports/" \; 2>/dev/null || true
+          cp -r raw-jsons/* "$BUNDLE_DIR/04-raw-json/" 2>/dev/null || true
+          find all-artifacts -name "qg-summary-*.json" -exec cp {} "$BUNDLE_DIR/05-qg-summary/" \; 2>/dev/null || true
+          find all-artifacts -name "quality-gate-final.json" -exec cp {} "$BUNDLE_DIR/05-qg-summary/" \; 2>/dev/null || true
+          [ -f pdfs/batch-manifest.json ] && cp pdfs/batch-manifest.json "$BUNDLE_DIR/"
+
+          cat > "$BUNDLE_DIR/README.md" <<EOF
+          # Análisis SSDLC — ${{ github.repository }}
+
+          **Rama analizada:** \`${{ github.ref_name }}\`
+          **Commit:**         \`${{ github.sha }}\`
+          **Ejecutado:**      $(date -u '+%Y-%m-%d %H:%M UTC')
+
+          ## Estructura
+          - 01-pdf-ejecutivo/     PDF consolidado para stakeholders
+          - 02-pdf-individuales/  PDF por herramienta con detalle
+          - 03-html-reports/      HTMLs interactivos con botón PDF
+          - 04-raw-json/          Outputs crudos
+          - 05-qg-summary/        Sumarios CVSSv3 + veredicto QG
+          EOF
+
+          zip -r "$BUNDLE_DIR.zip" "$BUNDLE_DIR" -q
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sec-report
+          path: ${{ env.BUNDLE_DIR }}.zip
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Borrar artifacts individuales (solo si ZIP creado)
+        if: always()
+        continue-on-error: true
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const KEEP = new Set(['sec-report', 'quality-gate-final']);
+            const { owner, repo } = context.repo;
+            const { data } = await github.rest.actions.listWorkflowRunArtifacts({
+              owner, repo, run_id: context.runId, per_page: 100,
+            });
+            const zipExists = data.artifacts.some(a => a.name === 'sec-report');
+            if (!zipExists) {
+              core.warning('ZIP no creado — conservando individuales para debug');
+              return;
+            }
+            for (const art of data.artifacts) {
+              if (KEEP.has(art.name)) continue;
+              try {
+                await github.rest.actions.deleteArtifact({ owner, repo, artifact_id: art.id });
+              } catch (e) {
+                core.warning(`No pude borrar ${art.name}: ${e.message}`);
+              }
+            }
