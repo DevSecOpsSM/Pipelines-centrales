@@ -44,21 +44,21 @@ jobs:
   # ──────────────────────────────────────────────────────────────────────
   hooks:
     name: "Etapa 1 · Pre-commit Hooks"
-    uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-hooks.yml@v1.0.0
+    uses: Simon-Movilidad-Com/pipelines-centrales/.github/workflows/sec-hooks.yml@v1.0.0
 
   # ──────────────────────────────────────────────────────────────────────
   # ETAPA 2 — Detección de secretos (Gitleaks)
   # ──────────────────────────────────────────────────────────────────────
   secretos:
     name: "Etapa 2 · Secrets Scan"
-    uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-secrets.yml@v1.0.0
+    uses: Simon-Movilidad-Com/pipelines-centrales/.github/workflows/sec-secrets.yml@v1.0.0
 
   # ──────────────────────────────────────────────────────────────────────
   # ETAPA 3 — SAST: Análisis estático (Semgrep OWASP Top 10)
   # ──────────────────────────────────────────────────────────────────────
   sast:
     name: "Etapa 3 · SAST (Semgrep)"
-    uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-sast.yml@v1.0.0
+    uses: Simon-Movilidad-Com/pipelines-centrales/.github/workflows/sec-sast.yml@v1.0.0
 
   # ──────────────────────────────────────────────────────────────────────
   # ETAPA 4 — SCA: Análisis de dependencias (OWASP Dependency-Check)
@@ -68,7 +68,7 @@ jobs:
   # ──────────────────────────────────────────────────────────────────────
   # sca:
   #   name: "Etapa 4 · SCA (Dependency-Check)"
-  #   uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-sca.yml@v1.0.0
+  #   uses: Simon-Movilidad-Com/pipelines-centrales/.github/workflows/sec-sca.yml@v1.0.0
   #   secrets:
   #     NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
 
@@ -77,14 +77,14 @@ jobs:
   # ──────────────────────────────────────────────────────────────────────
   iac:
     name: "Etapa 5 · IaC (Checkov)"
-    uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-iac-terraform.yml@v1.0.0
+    uses: Simon-Movilidad-Com/pipelines-centrales/.github/workflows/sec-iac-terraform.yml@v1.0.0
 
   # ──────────────────────────────────────────────────────────────────────
   # ETAPA 6 — Seguridad de contenedores (KICS + Hadolint + Trivy)
   # ──────────────────────────────────────────────────────────────────────
   contenedores:
     name: "Etapa 6 · Container Security"
-    uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-containers.yml@v1.0.0
+    uses: Simon-Movilidad-Com/pipelines-centrales/.github/workflows/sec-containers.yml@v1.0.0
 
   # ──────────────────────────────────────────────────────────────────────
   # ETAPA 7 — SAST + Coverage (SonarQube on-prem)
@@ -93,7 +93,7 @@ jobs:
   # ──────────────────────────────────────────────────────────────────────
   sonarqube:
     name: "Etapa 7 · SonarQube (SAST + Coverage)"
-    uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-sonarqube.yml@v1.0.0
+    uses: Simon-Movilidad-Com/pipelines-centrales/.github/workflows/sec-sonarqube.yml@v1.0.0
     # with:
     #   sonar-host-url:    "http://sonar.miempresa.internal:9005"
     #   sonar-project-key: "mi-proyecto-customkey"
@@ -125,7 +125,7 @@ jobs:
       - name: Checkout pipelines-centrales (para el script consolidator)
         uses: actions/checkout@v4
         with:
-          repository: DevSecOpsSM/pipelines-centrales
+          repository: Simon-Movilidad-Com/pipelines-centrales
           ref: v1.0.0
           path: .pipelines-centrales
 
@@ -244,7 +244,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          repository: DevSecOpsSM/pipelines-centrales
+          repository: Simon-Movilidad-Com/pipelines-centrales
           ref: v1.0.0
           path: .pipelines-centrales
 
