@@ -38,6 +38,9 @@ on:
 permissions:
   contents: read
   pull-requests: write   # Necesario para comentar en el PR si la validación falla
+  issues: write          # actions/github-script usa github.rest.issues.* que caen
+                         # bajo el namespace /issues/ de la REST API, aunque los
+                         # comentarios sean sobre PRs (PRs son un subtipo de issue)
 
 jobs:
   validate-source:
