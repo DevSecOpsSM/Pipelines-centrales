@@ -70,11 +70,21 @@ jobs:
     continue-on-error: true
 
     steps:
+      # ⚠️ TODO ANTES DE MERGE A MAIN ⚠️
+      # Este `ref:` DEBE quedar alineado con la rama/tag donde vive el script
+      # scripts/defectdojo_upload.py. Los reusable workflows en GitHub Actions
+      # NO exponen su propio ref (github.action_ref no funciona), así que hay
+      # que hardcodear.
+      #
+      # Cronograma:
+      #   - Testing (ahora):     ref: feat/defectdojo-upload
+      #   - Al mergear a main:   ref: main
+      #   - Al releasear v1.1.0: ref: v1.1.0  (o mantener 'main' si preferís rolling)
       - name: Checkout pipelines-centrales (para el script)
         uses: actions/checkout@v4
         with:
           repository: DevSecOpsSM/pipelines-centrales
-          ref: v1.0.0
+          ref: feat/defectdojo-upload
           path: .pipelines-centrales
 
       - name: Descargar TODOS los artifacts del run
