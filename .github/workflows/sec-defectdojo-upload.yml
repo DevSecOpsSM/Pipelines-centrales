@@ -109,8 +109,15 @@ jobs:
           echo "engagement=$ENG" >> "$GITHUB_OUTPUT"
           echo "Engagement: $ENG"
 
+      # Runners self-hosted no siempre traen pip en PATH → forzamos Python 3.12
+      # con setup-python (funciona en hosted + self-hosted).
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
       - name: Instalar dependencias Python
-        run: pip install --quiet requests
+        run: python -m pip install --quiet requests
 
       - name: Subir a DefectDojo
         env:
@@ -163,4 +170,4 @@ jobs:
           name: defectdojo-upload-summary
           path: reports/defectdojo-upload-summary.json
           retention-days: 30
-          if-no-files-found: warn
+     
