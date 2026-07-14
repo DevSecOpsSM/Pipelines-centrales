@@ -49,6 +49,11 @@ on:
         type: string
         required: false
         default: ""
+      product-type-name:
+        description: "Product Type en DD (requerido para auto-crear Products; DD ya trae 'Research and Development')"
+        type: string
+        required: false
+        default: "Research and Development"
     secrets:
       DEFECTDOJO_TOKEN:
         description: "Token API de DefectDojo con permiso Import Scan"
@@ -143,6 +148,7 @@ jobs:
             --run-id "${{ github.run_id }}" \
             --dd-url "$DD_URL" \
             --dd-token "$DD_TOKEN" \
+            --product-type-name "${{ inputs.product-type-name }}" \
             --summary-out reports/defectdojo-upload-summary.json
 
       - name: Publicar resumen en Step Summary
@@ -181,3 +187,5 @@ jobs:
           path: reports/defectdojo-upload-summary.json
           retention-days: 30
      
+
+        
