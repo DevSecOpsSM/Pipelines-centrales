@@ -397,6 +397,11 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: "stable"
+          # cache: false → evita que el post-cleanup intente subir 2-3 GB de
+          # GOMODCACHE+GOCACHE al Actions Cache backend desde runners self-hosted.
+          # Observado stalling en 0.0 MB/s por >6 min. Trade-off: re-descarga
+          # modules cada run (~30-60s), pero jamás bloquea el pipeline.
+          cache: false
 
       - name: Tests Go (go test -coverprofile)
         if: steps.detect.outputs.has_go == 'true'

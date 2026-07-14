@@ -102,6 +102,42 @@ jobs:
     secrets:
       SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
+  # ──────────────────────────────────────────────────────────────────────
+  # ETAPA 8 — DefectDojo Upload (ASOC / Vulnerability Management)
+  #
+  # Sube los raw JSONs de los 7 scanners (Semgrep, Gitleaks, Dependency-Check,
+  # Checkov, KICS, Trivy, Hadolint) al servidor DefectDojo on-prem usando la
+  # API REST con parsers nativos por herramienta.
+  #
+  # SonarQube NO se sube desde aquí: se integra nativamente en DefectDojo
+  # vía la API key configurada en el Product Settings (evita duplicados).
+  #
+  # Pre-requisitos:
+  #   - Secret organizacional DEFECTDOJO_TOKEN (token API con permiso Import)
+  #   - Servidor DD alcanzable desde el runner (self-hosted por defecto)
+  #   - auto_create_context=true → DD crea Product/Engagement automático
+  #
+  # Modo Auditoría: continue-on-error dentro del workflow reutilizable.
+  # Outage de DefectDojo NO bloquea el pipeline. La decisión pass/fail la
+  # sigue tomando el quality-gate-consolidated con los raw JSONs locales.
+  #
+  # Se ejecuta en PARALELO con quality-gate-consolidated (ambos dependen de
+  # los mismos jobs de scan) para no retrasar el veredicto ni el ZIP final.
+  # ──────────────────────────────────────────────────────────────────────
+  defectdojo:
+    name: "Etapa 8 · DefectDojo Upload"
+    needs: [hooks, secretos, sast, iac, contenedores, sonarqube]
+    # ↑ mismas dependencias que quality-gate-consolidated (paralelismo).
+    #   Reactivar `sca` aquí también cuando se descomente el job sca arriba.
+    if: always()
+    uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-defectdojo-upload.yml@v1.0.0
+    with:
+      defectdojo-url: "https://defectdojo.miempresa.internal"
+      # runner-label: "self-hosted"          # default; override si necesitas otro
+      # engagement-branch: "main"            # default = github.ref_name
+    secrets:
+      DEFECTDOJO_TOKEN: ${{ secrets.DEFECTDOJO_TOKEN }}
+
   # ══════════════════════════════════════════════════════════════════════
   # QUALITY GATE CONSOLIDADO — Decide pass/fail aplicando tabla CVSSv3
   # acumulada entre todas las etapas. Publica:
@@ -235,7 +271,7 @@ jobs:
   # ══════════════════════════════════════════════════════════════════════
   consolidate-artifacts:
     name: "Consolidar reportes en ZIP entregable"
-    needs: [quality-gate-consolidated]
+    needs: [quality-gate-consolidated, defectdojo]
     if: always()
     runs-on: ubuntu-latest
     permissions:
