@@ -27,22 +27,7 @@
 # Modo Auditoría: continue-on-error a nivel de job.
 # Outage de DefectDojo NO bloquea release.
 #
-# ── CONECTIVIDAD ──────────────────────────────────────────────────────────
-# DefectDojo es interno. Hay dos formas de alcanzarlo, según dónde corra el
-# runner:
-#
-#   A) Runner con visibilidad de red directa (misma VPC / VPN):
-#      → ssm-target vacío (default). Pasar defectdojo-url = URL interna real.
-#        Ej: http://10.20.30.40:8088
-#
-#   B) Runner SIN visibilidad directa (hosted de GitHub, VM de oficina):
-#      → ssm-target = instance-id de la EC2 que sirve DD
-#      → aws-role-arn = rol asumible vía OIDC con permiso ssm:StartSession
-#      → defectdojo-url = http://localhost:8088
-#        El job abre el port-forward SSM antes de subir.
-#
-# En AMBOS casos corre un preflight contra /api/v2/ que falla rápido y con
-# mensaje claro, en vez de emitir un Connection refused por cada scanner.
+# Runner: self-hosted por defecto (DD suele ser interno). Configurable.
 # ═══════════════════════════════════════════════════════════════════════════
 
 name: Security - DefectDojo Upload
@@ -64,34 +49,11 @@ on:
         type: string
         required: false
         default: ""
-
-      # ── Túnel SSM (opcional) ──────────────────────────────────────────
-      ssm-target:
-        description: "Instance ID de la EC2 que sirve DD. Vacío = sin túnel (modo A)"
+      product-type-name:
+        description: "Product Type en DD (requerido para auto-crear Products; DD ya trae 'Research and Development')"
         type: string
         required: false
-        default: ""
-      ssm-port:
-        description: "Puerto de DefectDojo en la instancia remota"
-        type: string
-        required: false
-        default: "8088"
-      ssm-local-port:
-        description: "Puerto local en el runner. Debe coincidir con defectdojo-url"
-        type: string
-        required: false
-        default: "8088"
-      aws-region:
-        description: "Región AWS de la instancia"
-        type: string
-        required: false
-        default: "us-east-1"
-      aws-role-arn:
-        description: "Rol IAM asumible vía OIDC. Requerido si ssm-target != ''"
-        type: string
-        required: false
-        default: ""
-
+        default: "Research and Development"
     secrets:
       DEFECTDOJO_TOKEN:
         description: "Token API de DefectDojo con permiso Import Scan"
@@ -108,18 +70,26 @@ jobs:
     permissions:
       contents: read
       actions: read
-      id-token: write        # ← OIDC hacia AWS. El job LLAMADOR también debe
-                             #   declararlo, o el token no se emite.
     # Outage de DD nunca bloquea el pipeline — la decisión pass/fail ya la
     # tomó el quality-gate-consolidated antes de este job.
     continue-on-error: true
 
     steps:
+      # ⚠️ TODO ANTES DE MERGE A MAIN ⚠️
+      # Este `ref:` DEBE quedar alineado con la rama/tag donde vive el script
+      # scripts/defectdojo_upload.py. Los reusable workflows en GitHub Actions
+      # NO exponen su propio ref (github.action_ref no funciona), así que hay
+      # que hardcodear.
+      #
+      # Cronograma:
+      #   - Testing (ahora):     ref: feat/defectdojo-upload
+      #   - Al mergear a main:   ref: main
+      #   - Al releasear v1.1.0: ref: v1.1.0  (o mantener 'main' si preferís rolling)
       - name: Checkout pipelines-centrales (para el script)
         uses: actions/checkout@v4
         with:
           repository: DevSecOpsSM/pipelines-centrales
-          ref: v1.0.0
+          ref: feat/defectdojo-upload
           path: .pipelines-centrales
 
       - name: Descargar TODOS los artifacts del run
@@ -154,74 +124,15 @@ jobs:
           echo "engagement=$ENG" >> "$GITHUB_OUTPUT"
           echo "Engagement: $ENG"
 
-      # ── Túnel SSM — solo si ssm-target viene definido ──────────────────
-      - name: Validar configuración del túnel
-        if: inputs.ssm-target != ''
-        run: |
-          if [ -z "${{ inputs.aws-role-arn }}" ]; then
-            echo "::error title=Config::ssm-target está definido pero aws-role-arn está vacío"
-            exit 1
-          fi
-
-      - name: Configurar credenciales AWS (OIDC)
-        if: inputs.ssm-target != ''
-        uses: aws-actions/configure-aws-credentials@v4
+      # Runners self-hosted no siempre traen pip en PATH → forzamos Python 3.12
+      # con setup-python (funciona en hosted + self-hosted).
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
-          role-to-assume: ${{ inputs.aws-role-arn }}
-          aws-region: ${{ inputs.aws-region }}
-          role-session-name: gha-defectdojo-${{ github.run_id }}
-
-      - name: Instalar session-manager-plugin
-        if: inputs.ssm-target != ''
-        run: |
-          set -e
-          if command -v session-manager-plugin >/dev/null 2>&1; then
-            echo "Ya instalado: $(session-manager-plugin --version)"
-            exit 0
-          fi
-          curl -sS "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_64bit/session-manager-plugin.deb" \
-            -o session-manager-plugin.deb
-          sudo dpkg -i session-manager-plugin.deb
-          session-manager-plugin --version
-
-      - name: Abrir túnel SSM hacia DefectDojo
-        if: inputs.ssm-target != ''
-        run: |
-          set -e
-          nohup aws ssm start-session \
-            --target "${{ inputs.ssm-target }}" \
-            --document-name AWS-StartPortForwardingSession \
-            --parameters "portNumber=${{ inputs.ssm-port }},localPortNumber=${{ inputs.ssm-local-port }}" \
-            > ssm-tunnel.log 2>&1 &
-          echo $! > ssm-tunnel.pid
-          echo "Túnel lanzado (PID $(cat ssm-tunnel.pid)). Esperando handshake..."
-          sleep 5
-
-      # ── Preflight — corre SIEMPRE, con o sin túnel ─────────────────────
-      - name: Preflight — ¿DefectDojo responde?
-        env:
-          DD_URL: ${{ inputs.defectdojo-url }}
-        run: |
-          # Cualquier HTTP != 000 significa que la conexión TCP llegó.
-          # 401 es esperado y suficiente: solo falta el token.
-          for i in $(seq 1 30); do
-            code=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 3 "${DD_URL}/api/v2/" || true)
-            if [ -n "$code" ] && [ "$code" != "000" ]; then
-              echo "::notice title=DefectDojo alcanzable::HTTP ${code} tras ${i} intento(s)"
-              exit 0
-            fi
-            sleep 2
-          done
-          echo "::error title=DefectDojo inalcanzable::${DD_URL} no respondió en 60s"
-          echo "Runner: ${{ inputs.runner-label }} · Túnel SSM: ${{ inputs.ssm-target != '' && 'sí' || 'no' }}"
-          if [ -f ssm-tunnel.log ]; then
-            echo "--- ssm-tunnel.log ---"
-            cat ssm-tunnel.log
-          fi
-          exit 1
+          python-version: "3.12"
 
       - name: Instalar dependencias Python
-        run: pip install --quiet requests
+        run: python -m pip install --quiet requests
 
       - name: Subir a DefectDojo
         env:
@@ -237,15 +148,8 @@ jobs:
             --run-id "${{ github.run_id }}" \
             --dd-url "$DD_URL" \
             --dd-token "$DD_TOKEN" \
+            --product-type-name "${{ inputs.product-type-name }}" \
             --summary-out reports/defectdojo-upload-summary.json
-
-      - name: Cerrar túnel SSM
-        if: always() && inputs.ssm-target != ''
-        run: |
-          if [ -f ssm-tunnel.pid ]; then
-            kill "$(cat ssm-tunnel.pid)" 2>/dev/null || true
-            echo "Túnel cerrado."
-          fi
 
       - name: Publicar resumen en Step Summary
         if: always()
@@ -282,4 +186,4 @@ jobs:
           name: defectdojo-upload-summary
           path: reports/defectdojo-upload-summary.json
           retention-days: 30
-          if-no-files-found: warn
+     
