@@ -1,0 +1,191 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# SSDLC · Etapa 8 — DefectDojo Upload (ASOC / Vuln Management)
+#
+# Herramienta: DefectDojo (servidor on-prem)
+# Sube los raw JSONs de todos los scanners al ASOC platform vía API REST,
+# usando los parsers nativos por herramienta (más ricos que SARIF genérico).
+#
+# Herramientas incluidas (7):
+#   - Semgrep (SAST)          - Trivy (containers)
+#   - Gitleaks (secrets)      - Hadolint (Dockerfile)
+#   - Dependency-Check (SCA)  - Checkov (IaC)
+#   - KICS (IaC/containers)
+#
+# NO incluye SonarQube — se integra nativamente en DefectDojo vía la API key
+# configurada en el Product Settings (evita duplicados).
+#
+# Modelo de datos DD:
+#   Product     = nombre del repo
+#   Engagement  = nombre de la rama (main, develop, release/*)
+#   Test        = un Test por herramienta por rama
+#
+# Flags:
+#   auto_create_context=true   → DD crea Product/Engagement/Test si no existen
+#   close_old_findings=true    → dedup automático dentro del engagement
+#                                (findings que ya no aparecen → Mitigated)
+#
+# Modo Auditoría: continue-on-error a nivel de job.
+# Outage de DefectDojo NO bloquea release.
+#
+# Runner: self-hosted por defecto (DD suele ser interno). Configurable.
+# ═══════════════════════════════════════════════════════════════════════════
+
+name: Security - DefectDojo Upload
+
+on:
+  workflow_call:
+    inputs:
+      defectdojo-url:
+        description: "URL base del servidor DefectDojo (sin slash final)"
+        type: string
+        required: true
+      runner-label:
+        description: "Etiqueta del runner con visibilidad del servidor DD"
+        type: string
+        required: false
+        default: "self-hosted"
+      engagement-branch:
+        description: "Nombre del engagement (vacío = usa github.ref_name)"
+        type: string
+        required: false
+        default: ""
+      product-type-name:
+        description: "Product Type en DD (requerido para auto-crear Products; DD ya trae 'Research and Development')"
+        type: string
+        required: false
+        default: "Research and Development"
+    secrets:
+      DEFECTDOJO_TOKEN:
+        description: "Token API de DefectDojo con permiso Import Scan"
+        required: true
+
+# Top-level least-privilege (CKV2_GHA_1). Cada job puede extender si necesita.
+permissions:
+  contents: read
+
+jobs:
+  upload:
+    name: "DefectDojo — Import scans"
+    runs-on: ${{ inputs.runner-label }}
+    permissions:
+      contents: read
+      actions: read
+    # Outage de DD nunca bloquea el pipeline — la decisión pass/fail ya la
+    # tomó el quality-gate-consolidated antes de este job.
+    continue-on-error: true
+
+    steps:
+      # ⚠️ TODO ANTES DE MERGE A MAIN ⚠️
+      # Este `ref:` DEBE quedar alineado con la rama/tag donde vive el script
+      # scripts/defectdojo_upload.py. Los reusable workflows en GitHub Actions
+      # NO exponen su propio ref (github.action_ref no funciona), así que hay
+      # que hardcodear.
+      #
+      # Cronograma:
+      #   - Testing (ahora):     ref: feat/defectdojo-upload
+      #   - Al mergear a main:   ref: main
+      #   - Al releasear v1.1.0: ref: v1.1.0  (o mantener 'main' si preferís rolling)
+      - name: Checkout pipelines-centrales (para el script)
+        uses: actions/checkout@v4
+        with:
+          repository: DevSecOpsSM/pipelines-centrales
+          ref: feat/defectdojo-upload
+          path: .pipelines-centrales
+
+      - name: Descargar TODOS los artifacts del run
+        uses: actions/download-artifact@v4
+        with:
+          path: all-artifacts/
+          merge-multiple: false
+
+      - name: Preparar directorio raw-jsons/
+        run: |
+          set -e
+          mkdir -p raw-jsons
+          # NO incluye sonar-issues.json — DD integra SonarQube vía su API key nativa
+          for name in gitleaks-raw.json semgrep-raw.json dependency-check-report.json \
+                     checkov-raw.json kics-results.json hadolint-raw.json \
+                     trivy-raw.json; do
+            find all-artifacts -name "$name" -exec cp {} raw-jsons/ \; 2>/dev/null || true
+          done
+          echo "=== JSONs recolectados para DefectDojo ==="
+          ls -la raw-jsons/ 2>/dev/null || echo "(vacío)"
+
+      - name: Resolver nombre del engagement
+        id: eng
+        run: |
+          ENG="${{ inputs.engagement-branch }}"
+          if [ -z "$ENG" ]; then
+            # En pull_request, github.ref_name = "123/merge" (basura para DD).
+            # github.head_ref = rama fuente del PR (feature/x) → lo que queremos.
+            # En push, github.head_ref = "" → fallback a github.ref_name (rama).
+            ENG="${{ github.head_ref || github.ref_name }}"
+          fi
+          echo "engagement=$ENG" >> "$GITHUB_OUTPUT"
+          echo "Engagement: $ENG"
+
+      # Runners self-hosted no siempre traen pip en PATH → forzamos Python 3.12
+      # con setup-python (funciona en hosted + self-hosted).
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalar dependencias Python
+        run: python -m pip install --quiet requests
+
+      - name: Subir a DefectDojo
+        env:
+          DD_URL:   ${{ inputs.defectdojo-url }}
+          DD_TOKEN: ${{ secrets.DEFECTDOJO_TOKEN }}
+        run: |
+          mkdir -p reports
+          python3 .pipelines-centrales/scripts/defectdojo_upload.py \
+            --raw-dir raw-jsons \
+            --repo "${{ github.repository }}" \
+            --branch "${{ steps.eng.outputs.engagement }}" \
+            --sha "${{ github.sha }}" \
+            --run-id "${{ github.run_id }}" \
+            --dd-url "$DD_URL" \
+            --dd-token "$DD_TOKEN" \
+            --product-type-name "${{ inputs.product-type-name }}" \
+            --summary-out reports/defectdojo-upload-summary.json
+
+      - name: Publicar resumen en Step Summary
+        if: always()
+        run: |
+          if [ -f reports/defectdojo-upload-summary.json ]; then
+            {
+              echo "## DefectDojo Upload — resumen"
+              echo ""
+              python3 -c "
+          import json
+          d = json.load(open('reports/defectdojo-upload-summary.json'))
+          print(f\"**Product:** \`{d['product']}\`  \")
+          print(f\"**Engagement:** \`{d['engagement']}\`  \")
+          print(f\"**Commit:** \`{d['commit'][:7]}\`  \")
+          print(f\"**DD URL:** {d['dd_url']}  \")
+          print()
+          print(f\"| Uploaded | Failed | Skipped |\")
+          print(f\"|----------|--------|---------|\")
+          print(f\"| {d['uploaded']} | {d['failed']} | {d['skipped']} |\")
+          print()
+          print('| Herramienta | Estado | Mensaje |')
+          print('|-------------|--------|---------|')
+          for r in d['details']:
+              icon = {'uploaded':'✅','failed':'❌','skipped':'⏭️'}.get(r['status'],'❓')
+              print(f\"| {r['tool']} | {icon} {r['status']} | {r.get('message', r.get('reason',''))[:80]} |\")
+          "
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Subir resumen del upload como artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: defectdojo-upload-summary
+          path: reports/defectdojo-upload-summary.json
+          retention-days: 30
+     
+
+        
