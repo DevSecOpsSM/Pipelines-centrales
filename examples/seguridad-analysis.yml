@@ -54,21 +54,21 @@ jobs:
   # ──────────────────────────────────────────────────────────────────────
   hooks:
     name: "Etapa 1 · Pre-commit Hooks"
-    uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-hooks.yml@develop
+    uses: Simon-Movilidad-Com/pipelines-centrales/.github/workflows/sec-hooks.yml@develop
 
   # ──────────────────────────────────────────────────────────────────────
   # ETAPA 2 — Detección de secretos (Gitleaks · historial completo)
   # ──────────────────────────────────────────────────────────────────────
   secretos:
     name: "Etapa 2 · Secrets Scan"
-    uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-secrets.yml@develop
+    uses: Simon-Movilidad-Com/pipelines-centrales/.github/workflows/sec-secrets.yml@develop
 
   # ──────────────────────────────────────────────────────────────────────
   # ETAPA 3 — SAST universal (Semgrep · OWASP Top 10 + Secrets + CI rules)
   # ──────────────────────────────────────────────────────────────────────
   sast:
     name: "Etapa 3 · SAST (Semgrep)"
-    uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-sast.yml@develop
+    uses: Simon-Movilidad-Com/pipelines-centrales/.github/workflows/sec-sast.yml@develop
 
   # ──────────────────────────────────────────────────────────────────────
   # ETAPA 4 — SCA (Dependency-Check) — DESACTIVADA en esta fase
@@ -76,7 +76,7 @@ jobs:
   # ──────────────────────────────────────────────────────────────────────
   # sca:
   #   name: "Etapa 4 · SCA (Dependency-Check)"
-  #   uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-sca.yml@develop
+  #   uses: Simon-Movilidad-Com/pipelines-centrales/.github/workflows/sec-sca.yml@develop
   #   secrets:
   #     NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
 
@@ -86,7 +86,7 @@ jobs:
   # ──────────────────────────────────────────────────────────────────────
   iac:
     name: "Etapa 5 · IaC (Checkov)"
-    uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-iac-terraform.yml@develop
+    uses: Simon-Movilidad-Com/pipelines-centrales/.github/workflows/sec-iac-terraform.yml@develop
 
   # ──────────────────────────────────────────────────────────────────────
   # ETAPA 6 — Container Security (KICS + Hadolint + Trivy)
@@ -94,7 +94,7 @@ jobs:
   # ──────────────────────────────────────────────────────────────────────
   contenedores:
     name: "Etapa 6 · Container Security"
-    uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-containers.yml@develop
+    uses: Simon-Movilidad-Com/pipelines-centrales/.github/workflows/sec-containers.yml@develop
 
   # ──────────────────────────────────────────────────────────────────────
   # ETAPA 7 — SonarQube (SAST + Coverage) — desactivable
@@ -103,7 +103,7 @@ jobs:
   # ──────────────────────────────────────────────────────────────────────
   # sonarqube:
   #   name: "Etapa 7 · SonarQube (SAST + Coverage)"
-  #   uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-sonarqube.yml@develop
+  #   uses: Simon-Movilidad-Com/pipelines-centrales/.github/workflows/sec-sonarqube.yml@develop
   #   secrets:
   #     SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
@@ -130,7 +130,7 @@ jobs:
       - name: Checkout pipelines-centrales (script consolidator)
         uses: actions/checkout@v4
         with:
-          repository: DevSecOpsSM/pipelines-centrales
+          repository: Simon-Movilidad-Com/pipelines-centrales
           ref: develop
           path: .pipelines-centrales
 
@@ -254,7 +254,7 @@ jobs:
       - name: Checkout pipelines-centrales (report-templates + batch script)
         uses: actions/checkout@v4
         with:
-          repository: DevSecOpsSM/pipelines-centrales
+          repository: Simon-Movilidad-Com/pipelines-centrales
           ref: develop
           path: .pipelines-centrales
 
