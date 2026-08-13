@@ -741,13 +741,17 @@ jobs:
         run: mkdir -p "reports/${{ github.event.repository.name }}"
 
       - name: Setup Trivy
-        # Action oficial de Aquasec. Reemplaza `curl install.sh | sh -s -- -b /usr/local/bin`
-        # que fallaba silenciosamente (exit 1 sin log) al mover el binario en algunos
-        # runners. La action descarga el .tar.gz directo del release, extrae con
-        # permisos correctos y expone `trivy` en PATH.
+        # Action oficial de Aquasec. Descarga el .tar.gz directo del release,
+        # extrae con permisos correctos y expone `trivy` en PATH.
+        #
+        # NOTA de versión: Aquasec rota assets binarios de releases antiguas.
+        # v0.55.2 tiene la página de release pero NO el tarball Linux-64bit,
+        # por lo que install.sh muere con exit 1 tras "found version".
+        # Se pinnea a v0.73.0 (última estable a 2026-08). Revisar cada 6 meses
+        # o si el step vuelve a fallar con "found version → exit 1".
         uses: aquasecurity/setup-trivy@v0.3.1
         with:
-          version: v0.55.2
+          version: v0.73.0
           cache: true
 
       - name: Verificar instalación
