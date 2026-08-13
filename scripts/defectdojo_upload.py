@@ -49,11 +49,12 @@ TOOL_MAP = [
 
 
 def _base_payload(scan_type, test_title, product_name, engagement_name,
-                  sha, branch, run_id, repo_full):
+                  sha, branch, run_id, repo_full, product_type_name):
     """Payload comun para import-scan y reimport-scan."""
     return {
         "scan_type":                        scan_type,
         "product_name":                     product_name,
+        "product_type_name":                product_type_name,
         "engagement_name":                  engagement_name,
         "test_title":                       f"{test_title} - {branch}",
         "auto_create_context":              "true",
@@ -95,13 +96,14 @@ def _import(dd_url, dd_token, raw_path, payload):
 
 
 def upload_tool(dd_url, dd_token, raw_path, scan_type, test_title,
-                product_name, engagement_name, sha, branch, run_id, repo_full):
+                product_name, engagement_name, sha, branch, run_id, repo_full,
+                product_type_name):
     """
     Intenta reimport-scan primero (dedup + close_old_findings).
     Si el test no existe todavia, cae a import-scan (primera corrida).
     """
     payload = _base_payload(scan_type, test_title, product_name, engagement_name,
-                            sha, branch, run_id, repo_full)
+                            sha, branch, run_id, repo_full, product_type_name)
 
     try:
         r = _reimport(dd_url, dd_token, raw_path, payload)
@@ -139,6 +141,8 @@ def main():
     ap.add_argument("--run-id",      required=True, help="github.run_id")
     ap.add_argument("--dd-url",      required=True, help="URL base del servidor DefectDojo")
     ap.add_argument("--dd-token",    required=True, help="Token API de DefectDojo")
+    ap.add_argument("--product-type-name", default="Research and Development",
+                    help="Product Type en DD (requerido por auto_create_context si el Product no existe)")
     ap.add_argument("--summary-out", help="Ruta para escribir resumen JSON (opcional)")
     args = ap.parse_args()
 
@@ -179,6 +183,7 @@ def main():
             scan_type, test_title,
             product_name, engagement_name,
             args.sha, args.branch, args.run_id, repo_full,
+            args.product_type_name,
         )
         status = "uploaded" if ok else "failed"
         icon   = "+" if ok else "x"

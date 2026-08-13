@@ -44,21 +44,21 @@ jobs:
   # ──────────────────────────────────────────────────────────────────────
   hooks:
     name: "Etapa 1 · Pre-commit Hooks"
-    uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-hooks.yml@v1.0.0
+    uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-hooks.yml@feat/defectdojo-upload
 
   # ──────────────────────────────────────────────────────────────────────
   # ETAPA 2 — Detección de secretos (Gitleaks)
   # ──────────────────────────────────────────────────────────────────────
   secretos:
     name: "Etapa 2 · Secrets Scan"
-    uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-secrets.yml@v1.0.0
+    uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-secrets.yml@feat/defectdojo-upload
 
   # ──────────────────────────────────────────────────────────────────────
   # ETAPA 3 — SAST: Análisis estático (Semgrep OWASP Top 10)
   # ──────────────────────────────────────────────────────────────────────
   sast:
     name: "Etapa 3 · SAST (Semgrep)"
-    uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-sast.yml@v1.0.0
+    uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-sast.yml@feat/defectdojo-upload
 
   # ──────────────────────────────────────────────────────────────────────
   # ETAPA 4 — SCA: Análisis de dependencias (OWASP Dependency-Check)
@@ -68,7 +68,7 @@ jobs:
   # ──────────────────────────────────────────────────────────────────────
   # sca:
   #   name: "Etapa 4 · SCA (Dependency-Check)"
-  #   uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-sca.yml@v1.0.0
+  #   uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-sca.yml@feat/defectdojo-upload
   #   secrets:
   #     NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
 
@@ -86,21 +86,25 @@ jobs:
   # ──────────────────────────────────────────────────────────────────────
   contenedores:
     name: "Etapa 6 · Container Security"
-    uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-containers.yml@v1.0.0
+    uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-containers.yml@feat/defectdojo-upload
 
   # ──────────────────────────────────────────────────────────────────────
-  # ETAPA 7 — SAST + Coverage (SonarQube on-prem)
+  # ETAPA 7 — SAST (SonarQube en instancia)
   # Requiere: secret SONAR_TOKEN a nivel repo u organización
-  # Runner: self-hosted con visibilidad del servidor SonarQube interno
+  # Runner: self-hosted con visibilidad del servidor SonarQube.
+  #
+  # skip-tests: true → se omiten las pruebas unitarias (pytest/jest/mvn/etc.)
+  # y por tanto no se calcula coverage. SonarQube sigue ejecutando SAST +
+  # security hotspots. El equipo aceptó el trade-off (coverage saldrá 0%).
   # ──────────────────────────────────────────────────────────────────────
   sonarqube:
-    name: "Etapa 7 · SonarQube (SAST + Coverage)"
-    uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-sonarqube.yml@v1.0.0
-    # with:
-    #   sonar-host-url:    "http://sonar.miempresa.internal:9005"
-    #   sonar-project-key: "mi-proyecto-customkey"
-    #   runner-label:      "self-hosted"
-    #   coverage-threshold: 80
+    name: "Etapa 7 · SonarQube (SAST)"
+    uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-sonarqube.yml@feat/defectdojo-upload
+    with:
+      sonar-host-url: "http://localhost:9095"
+      skip-tests:     true
+      # sonar-project-key: "mi-proyecto-customkey"
+      # runner-label:      "self-hosted"
     secrets:
       SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
@@ -132,7 +136,7 @@ jobs:
     # ↑ mismas dependencias que quality-gate-consolidated (paralelismo).
     #   Reactivar `sca` aquí también cuando se descomente el job sca arriba.
     if: always()
-    uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-defectdojo-upload.yml@v1.0.0
+    uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-defectdojo-upload.yml@feat/defectdojo-upload
     with:
       defectdojo-url: "https://defectdojo.miempresa.internal"
       # runner-label: "self-hosted"          # default; override si necesitas otro
@@ -164,7 +168,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: DevSecOpsSM/pipelines-centrales
-          ref: v1.0.0
+          ref: feat/defectdojo-upload
           path: .pipelines-centrales
 
       - name: Descargar qg-summaries de todas las etapas
@@ -283,7 +287,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: DevSecOpsSM/pipelines-centrales
-          ref: v1.0.0
+          ref: feat/defectdojo-upload
           path: .pipelines-centrales
 
       - uses: actions/download-artifact@v4
