@@ -557,7 +557,19 @@ jobs:
           # Foco Terraform + secretos embebidos.
           # Los otros frameworks (dockerfile, k8s, github_actions) los cubre
           # sec-containers · KICS — no los duplicamos aquí.
-          checkov -d . \
+          # --config-file lee .checkov.yaml (skip-check justificados en repo).
+          # Si el archivo no existe, se continúa sin config para no romper el job.
+          CONFIG_ARG=""
+          if [ -f .checkov.yaml ]; then
+            CONFIG_ARG="--config-file .checkov.yaml"
+            echo "::notice title=Checkov::Usando .checkov.yaml del repositorio (skip-check justificados)"
+          elif [ -f .checkov.yml ]; then
+            CONFIG_ARG="--config-file .checkov.yml"
+            echo "::notice title=Checkov::Usando .checkov.yml del repositorio (skip-check justificados)"
+          else
+            echo "::warning title=Checkov::No se encontró .checkov.yaml — se ejecuta baseline sin skip-check"
+          fi
+          checkov -d . $CONFIG_ARG \
             --framework terraform,terraform_plan,secrets \
             --skip-path .git \
             --skip-path .github \
