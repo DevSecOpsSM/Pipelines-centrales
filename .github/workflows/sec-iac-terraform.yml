@@ -740,12 +740,18 @@ jobs:
       - name: Crear directorio de reportes
         run: mkdir -p "reports/${{ github.event.repository.name }}"
 
-      - name: Instalar Trivy
-        run: |
-          # Instalación oficial via install.sh (pin de versión → reproducible)
-          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
-            | sh -s -- -b /usr/local/bin v0.55.2
-          trivy --version
+      - name: Setup Trivy
+        # Action oficial de Aquasec. Reemplaza `curl install.sh | sh -s -- -b /usr/local/bin`
+        # que fallaba silenciosamente (exit 1 sin log) al mover el binario en algunos
+        # runners. La action descarga el .tar.gz directo del release, extrae con
+        # permisos correctos y expone `trivy` en PATH.
+        uses: aquasecurity/setup-trivy@v0.2.3
+        with:
+          version: v0.55.2
+          cache: true
+
+      - name: Verificar instalación
+        run: trivy --version
 
       - name: Ejecutar Trivy en modo config (misconfig + secrets)
         continue-on-error: true
