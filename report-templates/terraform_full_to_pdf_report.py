@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
 """
 Script para convertir el análisis full de Terraform (fmt + validate + tflint +
-Checkov + Trivy config) a un ÚNICO PDF estructurado institucional.
+Checkov) a un ÚNICO PDF estructurado institucional.
 
 Uso:
   python3 terraform_full_to_pdf_report.py <primary_json> <output_pdf> [logo_path]
 
   <primary_json> debe apuntar a checkov-raw.json. El generator busca los otros
-  3 JSONs en el mismo directorio:
+  2 JSONs en el mismo directorio:
     - terraform-native-raw.json  (fmt + validate)
     - tflint-raw.json
-    - trivy-config-raw.json
 
   Los JSONs ausentes se saltan silenciosamente (la sección correspondiente
   no se renderiza).
@@ -55,8 +54,6 @@ class TerraformFullReportGenerator:
         self.native  = {}
         self.tflint  = []
         self.checkov = []
-        self.trivy_miscfgs = []
-        self.trivy_secrets = []
 
         self.stats = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
         self.tools_present = []
@@ -154,18 +151,6 @@ class TerraformFullReportGenerator:
                 self.checkov.extend((rep.get("results") or {}).get("failed_checks", []) or [])
             self.tools_present.append("Checkov")
 
-        trivy_raw = self._load_json("trivy-config-raw.json")
-        if trivy_raw is not None:
-            for r in trivy_raw.get("Results", []) or []:
-                target = r.get("Target", "?")
-                for m in r.get("Misconfigurations", []) or []:
-                    m["_target"] = target
-                    self.trivy_miscfgs.append(m)
-                for s in r.get("Secrets", []) or []:
-                    s["_target"] = target
-                    self.trivy_secrets.append(s)
-            self.tools_present.append("Trivy config")
-
     def calculate_stats(self):
         # terraform-native
         if self.native:
@@ -205,28 +190,6 @@ class TerraformFullReportGenerator:
             else:
                 self.stats["info"] += 1
 
-        # Trivy config (misconfig + secretos)
-        for m in self.trivy_miscfgs:
-            sev = (m.get("Severity") or "UNKNOWN").upper()
-            if sev == "CRITICAL":
-                self.stats["critical"] += 1
-            elif sev == "HIGH":
-                self.stats["high"] += 1
-            elif sev == "MEDIUM":
-                self.stats["medium"] += 1
-            else:
-                self.stats["low"] += 1
-        for s in self.trivy_secrets:
-            sev = (s.get("Severity") or "HIGH").upper()
-            if sev == "CRITICAL":
-                self.stats["critical"] += 1
-            elif sev == "HIGH":
-                self.stats["high"] += 1
-            elif sev == "MEDIUM":
-                self.stats["medium"] += 1
-            else:
-                self.stats["low"] += 1
-
         self.stats["total"] = sum(self.stats[k] for k in ("critical", "high", "medium", "low", "info"))
 
     # ─────────────────────────────────────────────────────────────────────
@@ -236,7 +199,7 @@ class TerraformFullReportGenerator:
     def _cover(self):
         elements = [Spacer(1, 1 * inch)]
         elements.append(Paragraph("REPORTE DE SEGURIDAD IaC", self.styles['CustomTitle']))
-        elements.append(Paragraph("Terraform — Full Analysis (fmt · validate · tflint · Checkov · Trivy)",
+        elements.append(Paragraph("Terraform — Full Analysis (fmt · validate · tflint · Checkov)",
                                   self.styles['Heading2']))
         elements.append(Spacer(1, 0.5 * inch))
         return elements
@@ -249,7 +212,6 @@ class TerraformFullReportGenerator:
         elements.append(Paragraph("3. terraform fmt + validate", self.styles['Normal']))
         elements.append(Paragraph("4. tflint — Linter", self.styles['Normal']))
         elements.append(Paragraph("5. Checkov — Seguridad IaC", self.styles['Normal']))
-        elements.append(Paragraph("6. Trivy config — Misconfig + Secretos", self.styles['Normal']))
         elements.append(PageBreak())
         return elements
 
@@ -323,15 +285,6 @@ class TerraformFullReportGenerator:
             m = sum(1 for x in self.checkov if (x.get("severity") or "HIGH").upper() == "MEDIUM")
             l = sum(1 for x in self.checkov if (x.get("severity") or "HIGH").upper() == "LOW")
             data.append(_row("Checkov", c, h, m, l, 0))
-
-        # Trivy config
-        if self.trivy_miscfgs or self.trivy_secrets:
-            all_tv = self.trivy_miscfgs + self.trivy_secrets
-            c = sum(1 for x in all_tv if (x.get("Severity") or "UNKNOWN").upper() == "CRITICAL")
-            h = sum(1 for x in all_tv if (x.get("Severity") or "UNKNOWN").upper() == "HIGH")
-            m = sum(1 for x in all_tv if (x.get("Severity") or "UNKNOWN").upper() == "MEDIUM")
-            l = len(all_tv) - c - h - m
-            data.append(_row("Trivy config", c, h, m, l, 0))
 
         # Total
         data.append(_row("TOTAL",
@@ -468,52 +421,6 @@ class TerraformFullReportGenerator:
                                       self.styles['BodyText']))
         return elements
 
-    def _section_trivy(self):
-        if not (self.trivy_miscfgs or self.trivy_secrets):
-            return []
-        elements = [PageBreak(),
-                    Paragraph("6. Trivy config — Misconfig + Secretos", self.styles['CustomHeading2']),
-                    Spacer(1, 0.2 * inch)]
-        elements.append(Paragraph(
-            f"<b>Misconfigurations:</b> {len(self.trivy_miscfgs)}<br/>"
-            f"<b>Secretos embebidos:</b> {len(self.trivy_secrets)}",
-            self.styles['BodyText']))
-        elements.append(Spacer(1, 0.15 * inch))
-
-        if self.trivy_miscfgs:
-            elements.append(Paragraph("<b>Misconfigurations (top 30):</b>", self.styles['BodyText']))
-            sev_order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "UNKNOWN": 4}
-            miscfgs_sorted = sorted(self.trivy_miscfgs,
-                                    key=lambda x: sev_order.get((x.get("Severity") or "UNKNOWN").upper(), 99))
-            for m in miscfgs_sorted[:30]:
-                sev = (m.get("Severity") or "UNKNOWN").upper()
-                mid = html.escape(m.get("ID", "?"))
-                title = html.escape(m.get("Title", ""))
-                target = html.escape(m.get("_target", "?"))
-                start = (m.get("CauseMetadata") or {}).get("StartLine", "?")
-                elements.append(Paragraph(
-                    f"<b>[{sev}] {mid}</b> — {title}<br/>"
-                    f"<font size='9' color='#7f8c8d'>{target}:{start}</font>",
-                    self.styles['BodyText']))
-                elements.append(Spacer(1, 0.07 * inch))
-
-        if self.trivy_secrets:
-            elements.append(Spacer(1, 0.15 * inch))
-            elements.append(Paragraph("<b>Secretos embebidos:</b>", self.styles['BodyText']))
-            for s in self.trivy_secrets[:20]:
-                sev = (s.get("Severity") or "HIGH").upper()
-                rid = html.escape(s.get("RuleID", "?"))
-                title = html.escape(s.get("Title", "secret"))
-                target = html.escape(s.get("_target", "?"))
-                line = s.get("StartLine", "?")
-                elements.append(Paragraph(
-                    f"<b>[{sev}] {rid}</b> — {title}<br/>"
-                    f"<font size='9' color='#7f8c8d'>{target}:{line}</font>",
-                    self.styles['BodyText']))
-                elements.append(Spacer(1, 0.07 * inch))
-
-        return elements
-
     def generate_pdf(self):
         try:
             self.load_all()
@@ -533,7 +440,6 @@ class TerraformFullReportGenerator:
             elements.extend(self._section_terraform_native())
             elements.extend(self._section_tflint())
             elements.extend(self._section_checkov())
-            elements.extend(self._section_trivy())
 
             doc.build(elements, onFirstPage=self.draw_header, onLaterPages=self.draw_header)
             print(f"✓ PDF Terraform Full generado exitosamente: {self.pdf_output_path}")
