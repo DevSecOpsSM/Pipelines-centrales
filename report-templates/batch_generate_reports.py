@@ -16,7 +16,10 @@ Input esperado (todos opcionales — el consolidador ignora los ausentes):
     gitleaks-raw.json                 (sec-secrets)
     semgrep-raw.json                  (sec-sast)
     dependency-check-report.json      (sec-sca)
-    checkov-raw.json                  (sec-iac-terraform)
+    checkov-raw.json                  (sec-iac-terraform · Checkov — primary)
+    terraform-native-raw.json         (sec-iac-terraform · fmt+validate — opcional)
+    tflint-raw.json                   (sec-iac-terraform · tflint — opcional)
+    trivy-config-raw.json             (sec-iac-terraform · Trivy config — opcional)
     kics-results.json                 (sec-containers · KICS)
     hadolint-raw.json                 (sec-containers · Hadolint)
     trivy-raw.json                    (sec-containers · Trivy)
@@ -79,15 +82,22 @@ from reportlab.lib import colors
 SCRIPT_DIR = Path(__file__).resolve().parent
 
 # tool_key → (json_filename, generator_module, tool_display_name, stage_number, sequence)
+#
+# NOTA sec-iac-terraform:
+#   El workflow sec-iac-terraform corre 4 herramientas (fmt+validate, tflint,
+#   Checkov, Trivy config). Aquí se representa como UN solo generator
+#   `terraform_full_to_pdf_report` que recibe el JSON primario (checkov-raw.json)
+#   y busca los otros 3 (terraform-native-raw.json, tflint-raw.json,
+#   trivy-config-raw.json) en el MISMO directorio. Los ausentes se saltan.
 TOOL_CATALOG = [
-    ("gitleaks",   "gitleaks-raw.json",              "gitleaks_to_pdf_report",   "Gitleaks (Secrets)",       2),
-    ("semgrep",    "semgrep-raw.json",               "semgrep_to_pdf_report",    "Semgrep (SAST)",           3),
-    ("owasp",      "dependency-check-report.json",   "owasp_to_pdf_report",      "OWASP Dependency-Check",   4),
-    ("checkov",    "checkov-raw.json",               "checkov_to_pdf_report",    "Checkov (IaC Terraform)",  5),
-    ("kics",       "kics-results.json",              "kics_to_pdf_report",       "KICS (IaC Multi-format)",  6),
-    ("hadolint",   "hadolint-raw.json",              "hadolint_to_pdf_report",   "Hadolint (Dockerfile)",    6),
-    ("trivy",      "trivy-raw.json",                 "trivy_to_pdf_report",      "Trivy (Containers/FS)",    6),
-    ("sonarqube",  "sonar-issues.json",              "sonarqube_to_pdf_report",  "SonarQube (SAST+Coverage)", 7),
+    ("gitleaks",        "gitleaks-raw.json",              "gitleaks_to_pdf_report",        "Gitleaks (Secrets)",                                      2),
+    ("semgrep",         "semgrep-raw.json",               "semgrep_to_pdf_report",         "Semgrep (SAST)",                                          3),
+    ("owasp",           "dependency-check-report.json",   "owasp_to_pdf_report",           "OWASP Dependency-Check",                                  4),
+    ("terraform_full",  "checkov-raw.json",               "terraform_full_to_pdf_report",  "Terraform Full (fmt+validate+tflint+Checkov+Trivy)",      5),
+    ("kics",            "kics-results.json",              "kics_to_pdf_report",            "KICS (IaC Multi-format)",                                 6),
+    ("hadolint",        "hadolint-raw.json",              "hadolint_to_pdf_report",        "Hadolint (Dockerfile)",                                   6),
+    ("trivy",           "trivy-raw.json",                 "trivy_to_pdf_report",           "Trivy (Containers/FS)",                                   6),
+    ("sonarqube",       "sonar-issues.json",              "sonarqube_to_pdf_report",       "SonarQube (SAST+Coverage)",                               7),
 ]
 
 
@@ -147,24 +157,83 @@ def _count_owasp(data) -> dict:
     return counts
 
 
-def _count_checkov(data) -> dict:
+def _count_terraform_full(data, input_dir: Optional[Path] = None) -> dict:
+    """
+    Consolida los counts de las 4 herramientas del workflow sec-iac-terraform:
+      - Checkov               (data — JSON primario recibido)
+      - terraform-native      (fmt + validate, si terraform-native-raw.json existe)
+      - tflint                (si tflint-raw.json existe)
+      - Trivy config          (si trivy-config-raw.json existe)
+
+    El JSON primario ES checkov-raw.json (por convención del TOOL_CATALOG).
+    Los otros 3 se buscan en el mismo directorio.
+    """
     counts = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
-    if not data:
-        return {**counts, "total": 0}
-    reports = data if isinstance(data, list) else [data]
-    for rep in reports:
-        for c in (rep.get("results", {}) or {}).get("failed_checks", []) or []:
-            sev = (c.get("severity") or "HIGH").upper()
-            if sev == "CRITICAL":
-                counts["critical"] += 1
-            elif sev == "HIGH":
-                counts["high"] += 1
-            elif sev == "MEDIUM":
-                counts["medium"] += 1
-            elif sev == "LOW":
-                counts["low"] += 1
-            else:
-                counts["info"] += 1
+
+    # ── Checkov ──────────────────────────────────────────────────────────
+    if data:
+        reports = data if isinstance(data, list) else [data]
+        for rep in reports:
+            for c in (rep.get("results", {}) or {}).get("failed_checks", []) or []:
+                sev = (c.get("severity") or "HIGH").upper()
+                if sev == "CRITICAL":
+                    counts["critical"] += 1
+                elif sev == "HIGH":
+                    counts["high"] += 1
+                elif sev == "MEDIUM":
+                    counts["medium"] += 1
+                elif sev == "LOW":
+                    counts["low"] += 1
+                else:
+                    counts["info"] += 1
+
+    if input_dir is None:
+        counts["total"] = sum(counts[k] for k in ("critical", "high", "medium", "low", "info"))
+        return counts
+
+    # ── terraform-native (fmt + validate) ────────────────────────────────
+    native = _safe_load_json(input_dir / "terraform-native-raw.json")
+    if native:
+        counts["info"] += len((native.get("fmt", {}) or {}).get("unformatted_files", []) or [])
+        for entry in (native.get("validate", {}) or {}).get("by_dir", []) or []:
+            for diag in entry.get("diagnostics", []) or []:
+                sev = (diag.get("severity") or "info").lower()
+                if sev == "error":
+                    counts["critical"] += 1
+                elif sev == "warning":
+                    counts["low"] += 1
+                else:
+                    counts["info"] += 1
+
+    # ── tflint ───────────────────────────────────────────────────────────
+    tflint_raw = _safe_load_json(input_dir / "tflint-raw.json")
+    if tflint_raw:
+        entries = tflint_raw if isinstance(tflint_raw, list) else [tflint_raw]
+        for entry in entries:
+            for it in entry.get("issues", []) or []:
+                sev = (it.get("rule", {}).get("severity") or "notice").lower()
+                if sev == "error":
+                    counts["medium"] += 1
+                elif sev == "warning":
+                    counts["low"] += 1
+                else:
+                    counts["info"] += 1
+
+    # ── Trivy config ─────────────────────────────────────────────────────
+    trivy_raw = _safe_load_json(input_dir / "trivy-config-raw.json")
+    if trivy_raw:
+        for r in trivy_raw.get("Results", []) or []:
+            for item in (r.get("Misconfigurations", []) or []) + (r.get("Secrets", []) or []):
+                sev = (item.get("Severity") or "UNKNOWN").upper()
+                if sev == "CRITICAL":
+                    counts["critical"] += 1
+                elif sev == "HIGH":
+                    counts["high"] += 1
+                elif sev == "MEDIUM":
+                    counts["medium"] += 1
+                else:
+                    counts["low"] += 1
+
     counts["total"] = sum(counts[k] for k in ("critical", "high", "medium", "low", "info"))
     return counts
 
@@ -245,14 +314,14 @@ def _count_sonarqube(data) -> dict:
 
 
 COUNTERS: dict[str, Callable] = {
-    "gitleaks":  _count_gitleaks,
-    "semgrep":   _count_semgrep,
-    "owasp":     _count_owasp,
-    "checkov":   _count_checkov,
-    "kics":      _count_kics,
-    "hadolint":  _count_hadolint,
-    "trivy":     _count_trivy,
-    "sonarqube": _count_sonarqube,
+    "gitleaks":       _count_gitleaks,
+    "semgrep":        _count_semgrep,
+    "owasp":          _count_owasp,
+    "terraform_full": _count_terraform_full,
+    "kics":           _count_kics,
+    "hadolint":       _count_hadolint,
+    "trivy":          _count_trivy,
+    "sonarqube":      _count_sonarqube,
 }
 
 
@@ -321,10 +390,15 @@ def run_individual_generators(
             results.append(result)
             continue
 
-        # Counts (para el consolidado)
+        # Counts (para el consolidado). Los counters "normales" solo aceptan
+        # data; los que consolidan múltiples JSONs (terraform_full) aceptan
+        # además input_dir como kwarg opcional.
         try:
             data = _safe_load_json(json_path)
-            result["counts"] = COUNTERS[tool_key](data)
+            try:
+                result["counts"] = COUNTERS[tool_key](data, input_dir=input_dir)
+            except TypeError:
+                result["counts"] = COUNTERS[tool_key](data)
         except Exception as exc:
             print(f"[WARN] counts para {tool_key} fallaron: {exc}", file=sys.stderr)
 
