@@ -1,15 +1,532 @@
 # ═══════════════════════════════════════════════════════════════════════════
-# SSDLC · Etapa IaC Especializada — Terraform (Checkov)
-# Herramienta: Checkov (Prisma Cloud)
-# Enfoque: Análisis de contexto y grafos para infraestructura cloud.
+# SSDLC · Etapa IaC — Terraform Full Analysis
+# Herramientas:
+#   - terraform fmt    : formato canónico HCL (HashiCorp oficial)
+#   - terraform validate: validación sintáctica/semántica (HashiCorp oficial)
+#   - tflint           : linter + provider rules + deprecated syntax
+#   - Checkov          : seguridad + grafos + contexto (Prisma Cloud)
+#   - Trivy config     : segundo opinion de misconfig + secretos en .tf (Aqua)
+#
+# Modo Auditoría: reporta hallazgos sin abortar los jobs de escaneo.
+# La decisión pass/fail la toma el quality-gate-consolidated global aguas
+# abajo con base en el qg-summary-sec-iac-terraform.json que emite el
+# job `qg-summary` de este workflow.
 # ═══════════════════════════════════════════════════════════════════════════
 
-name: Security - IaC (Checkov)
+name: Security - IaC Terraform (Full Analysis)
 
 on:
   workflow_call:
 
 jobs:
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # JOB 1 · terraform fmt + validate (HashiCorp CLI oficial)
+  # ─────────────────────────────────────────────────────────────────────────
+  terraform-native:
+    name: "terraform fmt + validate"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repositorio
+        uses: actions/checkout@v4
+
+      - name: Crear directorio de reportes
+        run: mkdir -p "reports/${{ github.event.repository.name }}"
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+          terraform_wrapper: false
+
+      - name: Detectar directorios con .tf
+        id: detect
+        run: |
+          # Localiza cada directorio único que contenga al menos un .tf,
+          # excluyendo paths auxiliares (checkouts, node_modules, etc.).
+          DIRS=$(find . -type f -name "*.tf" \
+            -not -path "./.git/*" \
+            -not -path "./.github/*" \
+            -not -path "./.pipelines-centrales/*" \
+            -not -path "./node_modules/*" \
+            -not -path "./vendor/*" \
+            -not -path "./.terraform/*" \
+            -not -path "./reports/*" \
+            -exec dirname {} \; | sort -u)
+          if [ -z "$DIRS" ]; then
+            echo "has_tf=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=terraform-native::No se encontraron archivos .tf — saltando fmt/validate"
+          else
+            echo "has_tf=true" >> "$GITHUB_OUTPUT"
+            echo "$DIRS" > tf-dirs.txt
+            echo "=== Directorios con .tf detectados ==="
+            cat tf-dirs.txt
+          fi
+
+      - name: Ejecutar terraform fmt (check + recursive)
+        if: steps.detect.outputs.has_tf == 'true'
+        continue-on-error: true
+        run: |
+          # -check: no reescribe, solo reporta.
+          # -recursive: recorre subdirectorios (evita loop por dir).
+          # -diff: incluye el diff en la salida para diagnóstico.
+          terraform fmt -check -recursive -diff . > fmt-output.txt 2>&1 || true
+          echo "--- fmt-output.txt ---"
+          cat fmt-output.txt || true
+
+      - name: Ejecutar terraform validate por directorio
+        if: steps.detect.outputs.has_tf == 'true'
+        continue-on-error: true
+        run: |
+          # validate requiere init previo por directorio (sin backend).
+          # Acumulamos resultados en un JSON array por directorio.
+          echo "[]" > validate-output.json
+          while IFS= read -r DIR; do
+            [ -z "$DIR" ] && continue
+            echo "=== validate en $DIR ==="
+            pushd "$DIR" >/dev/null
+            terraform init -backend=false -input=false -no-color >/dev/null 2>&1 || true
+            terraform validate -json > /tmp/validate-single.json 2>/dev/null || true
+            popd >/dev/null
+            # Añadir el dir al objeto para poder ubicar los hallazgos
+            python3 -c "
+          import json, sys
+          try:
+              d = json.load(open('/tmp/validate-single.json', encoding='utf-8'))
+          except Exception:
+              d = {'valid': False, 'error_count': 1, 'warning_count': 0,
+                   'diagnostics': [{'severity':'error','summary':'validate falló o no produjo JSON'}]}
+          d['_dir'] = '$DIR'
+          all_ = json.load(open('validate-output.json', encoding='utf-8'))
+          all_.append(d)
+          json.dump(all_, open('validate-output.json','w', encoding='utf-8'), indent=2)
+          "
+          done < tf-dirs.txt
+          echo "--- validate-output.json ---"
+          cat validate-output.json || true
+
+      - name: Construir terraform-native-raw.json (fmt + validate consolidado)
+        if: always()
+        env:
+          HAS_TF: ${{ steps.detect.outputs.has_tf }}
+          PYTHON_SCRIPT: |
+            import json, os, re
+            from pathlib import Path
+
+            has_tf = os.environ.get("HAS_TF") == "true"
+            out = {
+                "has_tf": has_tf,
+                "fmt": {"unformatted_files": [], "raw": ""},
+                "validate": {"by_dir": [], "totals": {"error_count": 0, "warning_count": 0}},
+            }
+
+            fmt_path = Path("fmt-output.txt")
+            if fmt_path.exists():
+                raw = fmt_path.read_text(encoding="utf-8", errors="replace")
+                out["fmt"]["raw"] = raw[:20000]  # cap por si es enorme
+                # Cada línea que no empieza con "diff" ni "-" ni "+" y termina en .tf
+                # típicamente es un path relativo. Simple heurística.
+                for line in raw.splitlines():
+                    line = line.strip()
+                    if line.endswith(".tf") and not line.startswith(("+","-","diff","@@","---","+++")):
+                        out["fmt"]["unformatted_files"].append(line)
+
+            v_path = Path("validate-output.json")
+            if v_path.exists():
+                try:
+                    data = json.load(open(v_path, encoding="utf-8"))
+                    for entry in data:
+                        d = entry.get("_dir", "?")
+                        ec = int(entry.get("error_count", 0) or 0)
+                        wc = int(entry.get("warning_count", 0) or 0)
+                        diags = entry.get("diagnostics") or []
+                        out["validate"]["by_dir"].append({
+                            "dir": d, "error_count": ec, "warning_count": wc,
+                            "diagnostics": diags[:20],   # cap por dir
+                        })
+                        out["validate"]["totals"]["error_count"]   += ec
+                        out["validate"]["totals"]["warning_count"] += wc
+                except Exception as exc:
+                    out["validate"]["error"] = f"No se pudo leer validate-output.json: {exc}"
+
+            Path("reports").mkdir(exist_ok=True)
+            with open("reports/terraform-native-raw.json", "w", encoding="utf-8") as fh:
+                json.dump(out, fh, indent=2, ensure_ascii=False)
+            print(f"[terraform-native] unformatted={len(out['fmt']['unformatted_files'])} "
+                  f"validate_errors={out['validate']['totals']['error_count']} "
+                  f"validate_warnings={out['validate']['totals']['warning_count']}")
+        run: python3 -c "$PYTHON_SCRIPT"
+
+      - name: Generar reporte HTML — terraform fmt+validate
+        if: always()
+        env:
+          REPO_NAME: ${{ github.event.repository.name }}
+          REPO_FULL: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          REF: ${{ github.ref_name }}
+          PYTHON_SCRIPT: |
+            import json, html, os, base64
+            from datetime import datetime
+
+            repo_name = os.environ['REPO_NAME']
+            repo_full = os.environ['REPO_FULL']
+            sha       = os.environ['SHA'][:7]
+            ref       = os.environ['REF']
+            fecha     = datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')
+            out_dir   = f"reports/{repo_name}"
+            os.makedirs(out_dir, exist_ok=True)
+
+            data = {}
+            try:
+                data = json.load(open("reports/terraform-native-raw.json", encoding="utf-8"))
+            except Exception:
+                pass
+
+            unformatted = data.get("fmt", {}).get("unformatted_files", []) or []
+            validate = data.get("validate", {})
+            totals   = validate.get("totals", {"error_count":0,"warning_count":0})
+            by_dir   = validate.get("by_dir", []) or []
+
+            fmt_rows = ""
+            for f in unformatted[:200]:
+                fmt_rows += f'<tr><td class="file-path">{html.escape(f)}</td></tr>\n'
+            fmt_table = ""
+            if fmt_rows:
+                fmt_table = f'<table><thead><tr><th>Archivo sin formato canónico</th></tr></thead><tbody>{fmt_rows}</tbody></table>'
+            else:
+                fmt_table = '<div class="no-findings"><div class="no-findings-icon">✅</div><h3>Formato correcto</h3><p>Todos los .tf están formateados canónicamente.</p></div>'
+
+            v_rows = ""
+            for entry in by_dir:
+                d  = html.escape(entry.get("dir","?"))
+                ec = entry.get("error_count", 0)
+                wc = entry.get("warning_count", 0)
+                for diag in entry.get("diagnostics", [])[:20]:
+                    sev = (diag.get("severity") or "info").upper()
+                    css = "badge-critical" if sev == "ERROR" else ("badge-medium" if sev == "WARNING" else "badge-low")
+                    summary = html.escape(diag.get("summary",""))[:200]
+                    detail  = html.escape(diag.get("detail",""))[:300]
+                    rng     = diag.get("range") or {}
+                    fname   = html.escape(str(rng.get("filename","?")))
+                    start   = rng.get("start", {}) or {}
+                    line    = start.get("line","?")
+                    v_rows += f'''<tr>
+                      <td class="col-sev"><span class="badge {css}">{sev}</span></td>
+                      <td class="col-dir">{d}</td>
+                      <td class="col-file file-path">{fname}:{line}</td>
+                      <td class="col-desc"><strong>{summary}</strong><br><span style="color:#888">{detail}</span></td>
+                    </tr>\n'''
+
+            v_table = ""
+            if v_rows:
+                v_table = f'<table><thead><tr><th class="col-sev">Severidad</th><th class="col-dir">Directorio</th><th class="col-file">Archivo:Línea</th><th class="col-desc">Diagnóstico</th></tr></thead><tbody>{v_rows}</tbody></table>'
+            else:
+                v_table = '<div class="no-findings"><div class="no-findings-icon">✅</div><h3>Sin errores de validación</h3><p>terraform validate no reportó problemas.</p></div>'
+
+            _logo = '<h2 style="color:#00F1C7;margin-bottom:10px;">Simon</h2>'
+            try:
+                if os.path.exists("image/logo_claro.png"):
+                    with open("image/logo_claro.png","rb") as _lf:
+                        _logo = f'<img src="data:image/png;base64,{base64.b64encode(_lf.read()).decode()}" alt="Simon" height="45">'
+            except Exception:
+                pass
+
+            report = f"""<!DOCTYPE html>
+            <html lang="es"><head><meta charset="UTF-8"><title>Terraform fmt+validate — {repo_name}</title>
+            <style>
+              *{{box-sizing:border-box;margin:0;padding:0}}
+              body{{font-family:'Segoe UI',system-ui,sans-serif;background:#1A1A1A;color:#E7E7E7}}
+              .header{{background:#000000;border-bottom:2px solid #00F1C7;padding:30px 40px}}
+              .tool-badge{{background:rgba(0,241,199,0.1);border:1px solid #00F1C7;color:#00F1C7;padding:6px 16px;border-radius:20px;font-size:13px;font-weight:700}}
+              .header h1{{font-size:26px;font-weight:700;color:#FFFFFF;margin-top:16px}}
+              .meta{{color:#B0B0B0;font-size:13px;margin-top:10px}}
+              .meta span{{margin-right:20px}}
+              .cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:16px;padding:30px;max-width:1100px;margin:0 auto}}
+              .card{{background:#373737;border-radius:8px;padding:20px;text-align:center;border-top:4px solid}}
+              .card-fmt{{border-top-color:#00F1C7}}.card-errors{{border-top-color:#F63D3D}}.card-warns{{border-top-color:#FAD900}}
+              .card-num{{font-size:36px;font-weight:800;line-height:1;color:#FFFFFF}}
+              .card-label{{font-size:11px;color:#B0B0B0;text-transform:uppercase;margin-top:8px;letter-spacing:1px}}
+              .section{{max-width:1100px;margin:0 auto 30px;padding:0 30px}}
+              .section-title{{font-size:16px;font-weight:600;color:#00F1C7;margin-bottom:14px;padding-bottom:8px;border-bottom:1px solid #373737}}
+              .wrap{{background:#000000;border:1px solid #373737;border-radius:8px;overflow:hidden}}
+              table{{width:100%;border-collapse:collapse;table-layout:fixed}}
+              .col-sev{{width:12%}}.col-dir{{width:22%}}.col-file{{width:28%}}.col-desc{{width:38%}}
+              thead{{background:#373737}}
+              th{{padding:14px 16px;color:#E7E7E7;font-size:12px;text-transform:uppercase;text-align:left;letter-spacing:0.5px}}
+              td{{padding:14px 16px;border-bottom:1px solid #373737;font-size:13px;vertical-align:top;color:#D1D1D1;word-wrap:break-word}}
+              tr:hover td{{background:#1A1A1A}}
+              .badge{{display:inline-block;padding:4px 12px;border-radius:12px;font-size:11px;font-weight:bold;text-transform:uppercase}}
+              .badge-critical{{background:rgba(246,61,61,0.15);color:#F63D3D;border:1px solid #F63D3D}}
+              .badge-medium{{background:rgba(250,217,0,0.15);color:#FAD900;border:1px solid #FAD900}}
+              .badge-low{{background:rgba(0,241,199,0.15);color:#00F1C7;border:1px solid #00F1C7}}
+              .file-path{{color:#888888;font-family:monospace;font-size:11px;word-break:break-all}}
+              .no-findings{{text-align:center;padding:60px 40px}}
+              .no-findings-icon{{font-size:52px;margin-bottom:14px}}
+              .no-findings h3{{font-size:18px;color:#4EDA56;margin-bottom:6px}}
+              .no-findings p{{color:#B0B0B0}}
+              .footer{{text-align:center;padding:30px;color:#888888;font-size:12px;border-top:1px solid #373737;margin-top:20px}}
+            </style></head><body>
+              <div class="header">
+                <div class="logo-container">{_logo}</div>
+                <span class="tool-badge">TERRAFORM · fmt + validate</span>
+                <h1>Terraform Native Checks</h1>
+                <div class="meta">
+                  <span>📦 {html.escape(repo_full)}</span>
+                  <span>🌿 {html.escape(ref)}</span>
+                  <span>🔖 {sha}</span>
+                  <span>🕐 {fecha}</span>
+                </div>
+              </div>
+              <div class="cards">
+                <div class="card card-fmt"><div class="card-num">{len(unformatted)}</div><div class="card-label">Archivos sin formato</div></div>
+                <div class="card card-errors"><div class="card-num">{totals.get('error_count',0)}</div><div class="card-label">Errores de validate</div></div>
+                <div class="card card-warns"><div class="card-num">{totals.get('warning_count',0)}</div><div class="card-label">Warnings de validate</div></div>
+              </div>
+              <div class="section"><div class="section-title">terraform fmt</div><div class="wrap">{fmt_table}</div></div>
+              <div class="section"><div class="section-title">terraform validate</div><div class="wrap">{v_table}</div></div>
+              <div class="footer">Generado por <strong>pipelines-centrales</strong> · Equipo Cybersecurity · Simon · {fecha}</div>
+            </body></html>"""
+
+            with open(f"{out_dir}/terraform-native-report.html","w",encoding="utf-8") as fh:
+                fh.write(report)
+            print(f"[terraform-native HTML] Generado con {len(unformatted)} unformatted, {totals.get('error_count',0)} errors.")
+        run: python3 -c "$PYTHON_SCRIPT"
+
+      - name: Subir HTML + raw JSON
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sec-iac-terraform-native-raw
+          path: |
+            reports/${{ github.event.repository.name }}/terraform-native-report.html
+            reports/terraform-native-raw.json
+          retention-days: 30
+          if-no-files-found: warn
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # JOB 2 · tflint (linter + provider rules)
+  # ─────────────────────────────────────────────────────────────────────────
+  tflint:
+    name: "tflint — Terraform Linter"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repositorio
+        uses: actions/checkout@v4
+
+      - name: Crear directorio de reportes
+        run: mkdir -p "reports/${{ github.event.repository.name }}"
+
+      - name: Setup tflint
+        uses: terraform-linters/setup-tflint@v4
+        with:
+          tflint_version: "v0.53.0"
+
+      - name: Detectar directorios con .tf
+        id: detect
+        run: |
+          DIRS=$(find . -type f -name "*.tf" \
+            -not -path "./.git/*" \
+            -not -path "./.github/*" \
+            -not -path "./.pipelines-centrales/*" \
+            -not -path "./node_modules/*" \
+            -not -path "./vendor/*" \
+            -not -path "./.terraform/*" \
+            -not -path "./reports/*" \
+            -exec dirname {} \; | sort -u)
+          if [ -z "$DIRS" ]; then
+            echo "has_tf=false" >> "$GITHUB_OUTPUT"
+            echo "[]" > tflint-raw.json
+            echo "::notice title=tflint::No se encontraron archivos .tf"
+          else
+            echo "has_tf=true" >> "$GITHUB_OUTPUT"
+            echo "$DIRS" > tf-dirs.txt
+          fi
+
+      - name: Ejecutar tflint (JSON output por directorio)
+        if: steps.detect.outputs.has_tf == 'true'
+        continue-on-error: true
+        run: |
+          # tflint init sin config custom → reglas base + provider rules.
+          # Se ejecuta por directorio para respetar módulos separados.
+          echo "[]" > tflint-raw.json
+          while IFS= read -r DIR; do
+            [ -z "$DIR" ] && continue
+            pushd "$DIR" >/dev/null
+            tflint --init >/dev/null 2>&1 || true
+            tflint --format json --no-color > /tmp/tflint-single.json 2>/dev/null || true
+            popd >/dev/null
+            python3 -c "
+          import json
+          try:
+              d = json.load(open('/tmp/tflint-single.json', encoding='utf-8'))
+          except Exception:
+              d = {'issues':[], 'errors':[]}
+          d['_dir'] = '$DIR'
+          all_ = json.load(open('tflint-raw.json', encoding='utf-8'))
+          all_.append(d)
+          json.dump(all_, open('tflint-raw.json','w', encoding='utf-8'), indent=2)
+          "
+          done < tf-dirs.txt
+          echo "--- tflint-raw.json ---"
+          head -c 2000 tflint-raw.json || true
+
+      - name: Copiar tflint-raw.json a reports/
+        if: always()
+        run: |
+          mkdir -p reports
+          cp -f tflint-raw.json reports/tflint-raw.json 2>/dev/null || echo "[]" > reports/tflint-raw.json
+
+      - name: Generar reporte HTML — tflint
+        if: always()
+        env:
+          REPO_NAME: ${{ github.event.repository.name }}
+          REPO_FULL: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          REF: ${{ github.ref_name }}
+          PYTHON_SCRIPT: |
+            import json, html, os, base64
+            from datetime import datetime
+
+            repo_name = os.environ['REPO_NAME']
+            repo_full = os.environ['REPO_FULL']
+            sha       = os.environ['SHA'][:7]
+            ref       = os.environ['REF']
+            fecha     = datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')
+            out_dir   = f"reports/{repo_name}"
+            os.makedirs(out_dir, exist_ok=True)
+
+            all_issues = []
+            try:
+                data = json.load(open("reports/tflint-raw.json", encoding="utf-8"))
+                for entry in (data if isinstance(data, list) else [data]):
+                    d = entry.get("_dir", "?")
+                    for it in entry.get("issues", []) or []:
+                        it["_dir"] = d
+                        all_issues.append(it)
+            except Exception as exc:
+                print(f"[tflint HTML] Error leyendo JSON: {exc}")
+
+            # Mapeo tflint severity → CVSSv3
+            #   error   → medium (política institucional: bugs en IaC = medium)
+            #   warning → low
+            #   notice  → info
+            SEV_CSS = {"error":"badge-medium","warning":"badge-low","notice":"badge-info","info":"badge-info"}
+            counts  = {"error":0,"warning":0,"notice":0,"info":0}
+
+            for it in all_issues:
+                sev = (it.get("rule",{}).get("severity") or "notice").lower()
+                counts[sev] = counts.get(sev, 0) + 1
+
+            rows = ""
+            for it in all_issues[:200]:
+                rule = it.get("rule", {}) or {}
+                sev  = (rule.get("severity") or "notice").lower()
+                css  = SEV_CSS.get(sev, "badge-info")
+                rid  = html.escape(rule.get("name","?"))
+                link = html.escape(rule.get("link",""))
+                msg  = html.escape(it.get("message",""))
+                rng  = it.get("range") or {}
+                fname = html.escape(str(rng.get("filename","?")))
+                start = rng.get("start",{}) or {}
+                line  = start.get("line","?")
+                d     = html.escape(it.get("_dir","?"))
+                rule_html = f'<a href="{link}" style="color:#00F1C7;text-decoration:none" target="_blank">{rid}</a>' if link else rid
+                rows += f'''<tr>
+                  <td class="col-sev"><span class="badge {css}">{sev.upper()}</span></td>
+                  <td class="col-rule"><code class="rule">{rule_html}</code></td>
+                  <td class="col-dir">{d}</td>
+                  <td class="col-file file-path">{fname}:{line}</td>
+                  <td class="col-desc">{msg}</td>
+                </tr>\n'''
+
+            no_findings = "" if all_issues else '<div class="no-findings"><div class="no-findings-icon">✅</div><h3>Sin hallazgos de tflint</h3><p>No se detectaron issues de linting en el código Terraform.</p></div>'
+            table = f'<table><thead><tr><th class="col-sev">Severidad</th><th class="col-rule">Regla</th><th class="col-dir">Directorio</th><th class="col-file">Archivo:Línea</th><th class="col-desc">Mensaje</th></tr></thead><tbody>{rows}</tbody></table>' if all_issues else ""
+
+            _logo = '<h2 style="color:#00F1C7;margin-bottom:10px;">Simon</h2>'
+            try:
+                if os.path.exists("image/logo_claro.png"):
+                    with open("image/logo_claro.png","rb") as _lf:
+                        _logo = f'<img src="data:image/png;base64,{base64.b64encode(_lf.read()).decode()}" alt="Simon" height="45">'
+            except Exception:
+                pass
+
+            total = len(all_issues)
+            report = f"""<!DOCTYPE html>
+            <html lang="es"><head><meta charset="UTF-8"><title>tflint — {repo_name}</title>
+            <style>
+              *{{box-sizing:border-box;margin:0;padding:0}}
+              body{{font-family:'Segoe UI',system-ui,sans-serif;background:#1A1A1A;color:#E7E7E7}}
+              .header{{background:#000000;border-bottom:2px solid #00F1C7;padding:30px 40px}}
+              .tool-badge{{background:rgba(0,241,199,0.1);border:1px solid #00F1C7;color:#00F1C7;padding:6px 16px;border-radius:20px;font-size:13px;font-weight:700}}
+              .header h1{{font-size:26px;font-weight:700;color:#FFFFFF;margin-top:16px}}
+              .meta{{color:#B0B0B0;font-size:13px;margin-top:10px}} .meta span{{margin-right:20px}}
+              .cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:16px;padding:30px;max-width:1100px;margin:0 auto}}
+              .card{{background:#373737;border-radius:8px;padding:20px;text-align:center;border-top:4px solid #00F1C7}}
+              .card-num{{font-size:36px;font-weight:800;color:#FFFFFF}}
+              .card-label{{font-size:11px;color:#B0B0B0;text-transform:uppercase;margin-top:8px;letter-spacing:1px}}
+              .section{{max-width:1100px;margin:0 auto 30px;padding:0 30px}}
+              .section-title{{font-size:16px;font-weight:600;color:#00F1C7;margin-bottom:14px;padding-bottom:8px;border-bottom:1px solid #373737}}
+              .wrap{{background:#000000;border:1px solid #373737;border-radius:8px;overflow:hidden}}
+              table{{width:100%;border-collapse:collapse;table-layout:fixed}}
+              .col-sev{{width:11%}} .col-rule{{width:20%}} .col-dir{{width:17%}} .col-file{{width:22%}} .col-desc{{width:30%}}
+              thead{{background:#373737}} th{{padding:14px 16px;color:#E7E7E7;font-size:12px;text-transform:uppercase;text-align:left;letter-spacing:0.5px}}
+              td{{padding:14px 16px;border-bottom:1px solid #373737;font-size:13px;vertical-align:top;color:#D1D1D1;word-wrap:break-word}}
+              tr:hover td{{background:#1A1A1A}}
+              .badge{{display:inline-block;padding:4px 12px;border-radius:12px;font-size:11px;font-weight:bold;text-transform:uppercase}}
+              .badge-medium{{background:rgba(250,217,0,0.15);color:#FAD900;border:1px solid #FAD900}}
+              .badge-low{{background:rgba(0,241,199,0.15);color:#00F1C7;border:1px solid #00F1C7}}
+              .badge-info{{background:rgba(136,136,136,0.15);color:#888888;border:1px solid #888888}}
+              .rule{{background:#373737;padding:2px 6px;border-radius:4px;font-size:11px;word-break:break-all}}
+              .file-path{{color:#888888;font-family:monospace;font-size:11px;word-break:break-all}}
+              .no-findings{{text-align:center;padding:60px 40px}} .no-findings-icon{{font-size:52px;margin-bottom:14px}}
+              .no-findings h3{{font-size:18px;color:#4EDA56;margin-bottom:6px}} .no-findings p{{color:#B0B0B0}}
+              .footer{{text-align:center;padding:30px;color:#888888;font-size:12px;border-top:1px solid #373737;margin-top:20px}}
+            </style></head><body>
+              <div class="header">
+                <div class="logo-container">{_logo}</div>
+                <span class="tool-badge">TFLINT — TERRAFORM LINTER</span>
+                <h1>Terraform Lint Report</h1>
+                <div class="meta">
+                  <span>📦 {html.escape(repo_full)}</span>
+                  <span>🌿 {html.escape(ref)}</span>
+                  <span>🔖 {sha}</span>
+                  <span>🕐 {fecha}</span>
+                </div>
+              </div>
+              <div class="cards">
+                <div class="card"><div class="card-num">{total}</div><div class="card-label">Issues detectados</div></div>
+                <div class="card"><div class="card-num">{counts.get('error',0)}</div><div class="card-label">Errores</div></div>
+                <div class="card"><div class="card-num">{counts.get('warning',0)}</div><div class="card-label">Warnings</div></div>
+                <div class="card"><div class="card-num">{counts.get('notice',0)+counts.get('info',0)}</div><div class="card-label">Notices/Info</div></div>
+              </div>
+              <div class="section"><div class="section-title">Hallazgos — tflint</div><div class="wrap">{table}{no_findings}</div></div>
+              <div class="footer">Generado por <strong>pipelines-centrales</strong> · Equipo Cybersecurity · Simon · {fecha}</div>
+            </body></html>"""
+            with open(f"{out_dir}/tflint-report.html","w",encoding="utf-8") as fh:
+                fh.write(report)
+            print(f"[tflint HTML] Generado con {total} issues.")
+        run: python3 -c "$PYTHON_SCRIPT"
+
+      - name: Subir HTML + raw JSON
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sec-iac-terraform-tflint-raw
+          path: |
+            reports/${{ github.event.repository.name }}/tflint-report.html
+            reports/tflint-raw.json
+          retention-days: 30
+          if-no-files-found: warn
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # JOB 3 · Checkov (seguridad + contexto + grafos)
+  # ─────────────────────────────────────────────────────────────────────────
   checkov:
     name: "Checkov — IaC Terraform Security"
     runs-on: ubuntu-latest
@@ -23,30 +540,35 @@ jobs:
       - name: Crear directorio de reportes
         run: mkdir -p "reports/${{ github.event.repository.name }}"
 
-      - name: Instalar Checkov
-        run: pip install checkov --quiet
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
 
-      - name: Ejecutar Checkov (IaC multi-framework)
+      - name: Instalar Checkov
+        run: pip install --quiet "checkov==3.2.334"
+
+      - name: Ejecutar Checkov (Terraform + secretos)
         continue-on-error: true
         run: |
-          # Frameworks explícitos: cubre Terraform, Dockerfile, K8s,
-          # GitHub Actions y detección de secretos en IaC.
-          # NO se usa --framework terraform solo porque filtra a Terraform
-          # y da resource_count=0 en repos que no son 100% IaC.
+          # Foco Terraform + secretos embebidos.
+          # Los otros frameworks (dockerfile, k8s, github_actions) los cubre
+          # sec-containers · KICS — no los duplicamos aquí.
           checkov -d . \
-            --framework terraform,dockerfile,kubernetes,github_actions,secrets \
+            --framework terraform,terraform_plan,secrets \
             --skip-path .git \
+            --skip-path .github \
             --skip-path .pipelines-centrales \
             --skip-path node_modules \
             --skip-path vendor \
             --skip-path reports \
             --output json > reports/checkov-raw.json || true
 
-          # Garantizar archivo JSON válido si no hay salida
           if [ ! -s reports/checkov-raw.json ]; then
             echo '{"results":{"passed_checks":[],"failed_checks":[]}}' > reports/checkov-raw.json
           fi
-      - name: Generar reporte HTML Checkov
+
+      - name: Generar reporte HTML — Checkov
         if: always()
         env:
           REPO_NAME: ${{ github.event.repository.name }}
@@ -54,7 +576,7 @@ jobs:
           SHA: ${{ github.sha }}
           REF: ${{ github.ref_name }}
           PYTHON_SCRIPT: |
-            import json, html, os
+            import json, html, os, base64
             from datetime import datetime
 
             repo_name = os.environ.get('REPO_NAME', 'unknown')
@@ -66,7 +588,6 @@ jobs:
 
             failed_checks = []
             passed_checks = []
-
             raw_path = "reports/checkov-raw.json"
             if os.path.exists(raw_path):
                 try:
@@ -79,34 +600,23 @@ jobs:
                 except Exception as e:
                     print(f"Error procesando JSON para HTML: {e}")
 
-            total_failed = len(failed_checks)
-            total_passed = len(passed_checks)
-            total_checks = total_failed + total_passed
+            for c in failed_checks:
+                if not c.get('severity'):
+                    c['severity'] = 'HIGH'
 
-            # Checkov OS no siempre da severity nativa. Asignamos o estimamos.
-            for check in failed_checks:
-                if not check.get('severity'):
-                    check['severity'] = 'HIGH'
-
-            # Contar severidades (si están disponibles)
-            counts = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
-            for check in failed_checks:
-                sev = check.get('severity', 'HIGH').upper()
+            counts = {"CRITICAL":0,"HIGH":0,"MEDIUM":0,"LOW":0}
+            for c in failed_checks:
+                sev = (c.get('severity') or 'HIGH').upper()
                 if sev in counts:
                     counts[sev] += 1
                 else:
-                    counts['HIGH'] += 1 # Fallback
+                    counts['HIGH'] += 1
 
-            SEV_CSS = {
-                "CRITICAL": "badge-critical",
-                "HIGH":     "badge-high",
-                "MEDIUM":   "badge-medium",
-                "LOW":      "badge-low"
-            }
+            SEV_CSS = {"CRITICAL":"badge-critical","HIGH":"badge-high","MEDIUM":"badge-medium","LOW":"badge-low"}
 
             rows = ""
-            for check in failed_checks[:200]: # Limit for performance
-                sev = check.get('severity', 'HIGH').upper()
+            for check in failed_checks[:200]:
+                sev = (check.get('severity') or 'HIGH').upper()
                 css = SEV_CSS.get(sev, "badge-high")
                 check_id = html.escape(check.get('check_id', 'unknown'))
                 resource = html.escape(check.get('resource', 'unknown'))
@@ -114,7 +624,6 @@ jobs:
                 file_line = check.get('file_line_range', ['?','?'])
                 line_str = f"{file_line[0]}-{file_line[1]}" if isinstance(file_line, list) and len(file_line) == 2 else "?"
                 desc = html.escape(check.get('check_name', ''))
-                
                 rows += f"""<tr>
                   <td class="col-sev"><span class="badge {css}">{sev}</span></td>
                   <td class="col-rule"><code class="rule">{check_id}</code></td>
@@ -123,105 +632,64 @@ jobs:
                   <td class="col-desc">{desc}</td>
                 </tr>\n"""
 
+            total_failed = len(failed_checks)
+            total_passed = len(passed_checks)
+            total_checks = total_failed + total_passed
+
             no_findings = "" if total_failed > 0 else """
-              <div class="no-findings">
-                <div class="no-findings-icon">✅</div>
+              <div class="no-findings"><div class="no-findings-icon">✅</div>
                 <h3>Infraestructura Segura</h3>
-                <p>Checkov analizó el código Terraform y no encontró misconfiguraciones o vulnerabilidades.</p>
-              </div>"""
-
+                <p>Checkov analizó el código Terraform y no encontró misconfiguraciones.</p></div>"""
             table = f"""
-              <table>
-                <thead>
-                  <tr>
-                    <th class="col-sev">Severidad</th><th class="col-rule">Regla</th><th class="col-resource">Recurso</th>
-                    <th class="col-file">Archivo:Línea</th><th class="col-desc">Descripción</th>
-                  </tr>
-                </thead>
-                <tbody>{rows}</tbody>
-              </table>""" if total_failed > 0 else ""
+              <table><thead><tr>
+                  <th class="col-sev">Severidad</th><th class="col-rule">Regla</th><th class="col-resource">Recurso</th>
+                  <th class="col-file">Archivo:Línea</th><th class="col-desc">Descripción</th></tr></thead>
+                <tbody>{rows}</tbody></table>""" if total_failed > 0 else ""
 
-            import base64 as _b64
             _logo = '<h2 style="color:#00F1C7;margin-bottom:10px;">Simon</h2>'
             try:
                 if os.path.exists("image/logo_claro.png"):
                     with open("image/logo_claro.png","rb") as _lf:
-                        _logo = f'<img src="data:image/png;base64,{_b64.b64encode(_lf.read()).decode()}" alt="Simon" height="45">'
+                        _logo = f'<img src="data:image/png;base64,{base64.b64encode(_lf.read()).decode()}" alt="Simon" height="45">'
             except Exception:
                 pass
 
             report = f"""<!DOCTYPE html>
-            <html lang="es">
-            <head>
-              <meta charset="UTF-8">
-              <meta name="viewport" content="width=device-width, initial-scale=1.0">
-              <title>Checkov IaC Report — {repo_name}</title>
-              <style>
-                *{{box-sizing:border-box;margin:0;padding:0}}
-                body{{font-family:'Segoe UI',system-ui,sans-serif;background:#1A1A1A;color:#E7E7E7}}
-                .header{{background:#000000;border-bottom:2px solid #00F1C7;padding:30px 40px;position:relative}}
-                .logo-container{{margin-bottom:15px}}
-                .tool-badge{{background:rgba(0,241,199,0.1);border:1px solid #00F1C7;color:#00F1C7;padding:6px 16px;border-radius:20px;font-size:13px;font-weight:700}}
-                .header h1{{font-size:26px;font-weight:700;color:#FFFFFF;margin-top:16px}}
-                .meta{{color:#B0B0B0;font-size:13px;margin-top:10px}}
-                .meta span{{margin-right:20px}}
-                .cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:16px;padding:30px;max-width:1100px;margin:0 auto}}
-                .card{{background:#373737;border-radius:8px;padding:20px;text-align:center;border-top:4px solid}}
-                .card-total{{border-top-color:#B0B0B0}}.card-passed{{border-top-color:#4EDA56}}.card-failed{{border-top-color:#F63D3D}}
-                .card-num{{font-size:36px;font-weight:800;line-height:1}}
-                .card-label{{font-size:11px;color:#B0B0B0;text-transform:uppercase;margin-top:8px;letter-spacing:1px}}
-                .num-total{{color:#FFFFFF}}.num-passed{{color:#4EDA56}}.num-failed{{color:#F63D3D}}
-                .section{{max-width:1100px;margin:0 auto 30px;padding:0 30px}}
-                .section-title{{font-size:16px;font-weight:600;color:#00F1C7;margin-bottom:14px;padding-bottom:8px;border-bottom:1px solid #373737}}
-                .wrap{{background:#000000;border:1px solid #373737;border-radius:8px;overflow:hidden}}
-                
-                table{{width:100%;border-collapse:collapse;table-layout:fixed}}
-                .col-sev{{width:12%}} .col-rule{{width:15%}} .col-resource{{width:23%}} .col-file{{width:20%}} .col-desc{{width:30%}}
-                
-                thead{{background:#373737}}
-                th{{padding:14px 16px;color:#E7E7E7;font-size:12px;text-transform:uppercase;text-align:left;letter-spacing:0.5px}}
-                td{{padding:14px 16px;border-bottom:1px solid #373737;font-size:13px;vertical-align:top;color:#D1D1D1;word-wrap:break-word}}
-                tr:hover td{{background:#1A1A1A}}
-                .badge{{display:inline-block;padding:4px 12px;border-radius:12px;font-size:11px;font-weight:bold;text-transform:uppercase}}
-                .badge-critical{{background:rgba(246,61,61,0.15);color:#F63D3D;border:1px solid #F63D3D}}
-                .badge-high{{background:rgba(250,217,0,0.15);color:#FAD900;border:1px solid #FAD900}}
-                .badge-medium{{background:rgba(0,241,199,0.15);color:#00F1C7;border:1px solid #00F1C7}}
-                .badge-low{{background:rgba(136,136,136,0.15);color:#888888;border:1px solid #888888}}
-                .rule{{background:#373737;color:#00F1C7;padding:2px 6px;border-radius:4px;font-size:11px;word-break:break-all}}
-                .file-path{{color:#888888;font-family:monospace;font-size:11px;word-break:break-all}}
-                .no-findings{{text-align:center;padding:80px 40px}}
-                .no-findings-icon{{font-size:60px;margin-bottom:16px}}
-                .no-findings h3{{font-size:20px;color:#4EDA56;margin-bottom:8px}}
-                .no-findings p{{color:#B0B0B0}}
-                .footer{{text-align:center;padding:30px;color:#888888;font-size:12px;border-top:1px solid #373737;margin-top:20px}}
-                .btn-pdf{{position:absolute;top:40px;right:40px;background:#00F1C7;color:#000;font-weight:bold;padding:10px 20px;border:none;border-radius:6px;cursor:pointer;font-size:14px;transition:0.2s}}
-                .btn-pdf:hover{{background:#00c4a0}}
-                @media print{{
-                  @page{{margin:1.5cm;size:auto}}
-                  body{{background:#FFFFFF !important;color:#000000 !important;-webkit-print-color-adjust:exact !important;print-color-adjust:exact !important}}
-                  .header{{background:#FFFFFF !important;border-bottom:2px solid #00F1C7 !important;padding:20px 0}}
-                  .header h1{{color:#000000 !important}}
-                  .btn-pdf{{display:none !important}}
-                  .cards{{padding:15px 0;gap:10px}}
-                  .card{{background:#F6F6F6 !important;border:1px solid #D1D1D1 !important;border-top:4px solid !important;padding:15px;page-break-inside:avoid}}
-                  .num-total,.num-passed,.num-failed{{color:#1A1A1A !important}}
-                  .wrap{{border:1px solid #D1D1D1 !important;background:#FFFFFF !important}}
-                  table{{table-layout:fixed;width:100%}}
-                  thead{{display:table-header-group;background:#F6F6F6 !important}}
-                  tr{{page-break-inside:avoid;page-break-after:auto}}
-                  td{{border-bottom:1px solid #E7E7E7 !important;color:#1A1A1A !important;padding:10px;vertical-align:middle}}
-                  th{{color:#373737 !important;border-bottom:2px solid #D1D1D1 !important;padding:10px}}
-                  .badge{{border:none !important;padding:4px 8px;font-size:10px}}
-                  .badge-critical{{background:#F63D3D !important;color:#FFFFFF !important}}
-                  .badge-high{{background:#FAD900 !important;color:#000000 !important}}
-                  .badge-medium{{background:#00F1C7 !important;color:#000000 !important}}
-                  .rule{{background:#E7E7E7 !important;color:#000 !important;border:1px solid #CCC !important}}
-                }}
-              </style>
-            </head>
-            <body>
+            <html lang="es"><head><meta charset="UTF-8"><title>Checkov IaC — {repo_name}</title>
+            <style>
+              *{{box-sizing:border-box;margin:0;padding:0}}
+              body{{font-family:'Segoe UI',system-ui,sans-serif;background:#1A1A1A;color:#E7E7E7}}
+              .header{{background:#000000;border-bottom:2px solid #00F1C7;padding:30px 40px}}
+              .tool-badge{{background:rgba(0,241,199,0.1);border:1px solid #00F1C7;color:#00F1C7;padding:6px 16px;border-radius:20px;font-size:13px;font-weight:700}}
+              .header h1{{font-size:26px;font-weight:700;color:#FFFFFF;margin-top:16px}}
+              .meta{{color:#B0B0B0;font-size:13px;margin-top:10px}} .meta span{{margin-right:20px}}
+              .cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:16px;padding:30px;max-width:1100px;margin:0 auto}}
+              .card{{background:#373737;border-radius:8px;padding:20px;text-align:center;border-top:4px solid}}
+              .card-total{{border-top-color:#B0B0B0}}.card-passed{{border-top-color:#4EDA56}}.card-failed{{border-top-color:#F63D3D}}
+              .card-num{{font-size:36px;font-weight:800;line-height:1}}
+              .card-label{{font-size:11px;color:#B0B0B0;text-transform:uppercase;margin-top:8px;letter-spacing:1px}}
+              .num-total{{color:#FFFFFF}}.num-passed{{color:#4EDA56}}.num-failed{{color:#F63D3D}}
+              .section{{max-width:1100px;margin:0 auto 30px;padding:0 30px}}
+              .section-title{{font-size:16px;font-weight:600;color:#00F1C7;margin-bottom:14px;padding-bottom:8px;border-bottom:1px solid #373737}}
+              .wrap{{background:#000000;border:1px solid #373737;border-radius:8px;overflow:hidden}}
+              table{{width:100%;border-collapse:collapse;table-layout:fixed}}
+              .col-sev{{width:12%}} .col-rule{{width:15%}} .col-resource{{width:23%}} .col-file{{width:20%}} .col-desc{{width:30%}}
+              thead{{background:#373737}} th{{padding:14px 16px;color:#E7E7E7;font-size:12px;text-transform:uppercase;text-align:left;letter-spacing:0.5px}}
+              td{{padding:14px 16px;border-bottom:1px solid #373737;font-size:13px;vertical-align:top;color:#D1D1D1;word-wrap:break-word}}
+              tr:hover td{{background:#1A1A1A}}
+              .badge{{display:inline-block;padding:4px 12px;border-radius:12px;font-size:11px;font-weight:bold;text-transform:uppercase}}
+              .badge-critical{{background:rgba(246,61,61,0.15);color:#F63D3D;border:1px solid #F63D3D}}
+              .badge-high{{background:rgba(250,217,0,0.15);color:#FAD900;border:1px solid #FAD900}}
+              .badge-medium{{background:rgba(0,241,199,0.15);color:#00F1C7;border:1px solid #00F1C7}}
+              .badge-low{{background:rgba(136,136,136,0.15);color:#888888;border:1px solid #888888}}
+              .rule{{background:#373737;color:#00F1C7;padding:2px 6px;border-radius:4px;font-size:11px;word-break:break-all}}
+              .file-path{{color:#888888;font-family:monospace;font-size:11px;word-break:break-all}}
+              .no-findings{{text-align:center;padding:80px 40px}}
+              .no-findings-icon{{font-size:60px;margin-bottom:16px}} .no-findings h3{{font-size:20px;color:#4EDA56;margin-bottom:8px}}
+              .no-findings p{{color:#B0B0B0}}
+              .footer{{text-align:center;padding:30px;color:#888888;font-size:12px;border-top:1px solid #373737;margin-top:20px}}
+            </style></head><body>
               <div class="header">
-                <button class="btn-pdf" onclick="window.print()">📥 Descargar PDF</button>
                 <div class="logo-container">{_logo}</div>
                 <span class="tool-badge">CHECKOV — IaC SECURITY</span>
                 <h1>Terraform Security Report</h1>
@@ -232,107 +700,431 @@ jobs:
                   <span>🕐 {fecha}</span>
                 </div>
               </div>
-              
               <div class="cards">
                 <div class="card card-total"><div class="card-num num-total">{total_checks}</div><div class="card-label">Checks Evaluados</div></div>
                 <div class="card card-passed"><div class="card-num num-passed">{total_passed}</div><div class="card-label">Checks Exitosos</div></div>
                 <div class="card card-failed"><div class="card-num num-failed">{total_failed}</div><div class="card-label">Vulnerabilidades</div></div>
               </div>
-              
-              <div class="section">
-                <div class="section-title">Hallazgos — Checkov (Terraform)</div>
-                <div class="wrap">{table}{no_findings}</div>
-              </div>
-              
+              <div class="section"><div class="section-title">Hallazgos — Checkov (Terraform)</div><div class="wrap">{table}{no_findings}</div></div>
               <div class="footer">Generado por <strong>pipelines-centrales</strong> · Equipo Cybersecurity · Simon · {fecha}</div>
-            </body>
-            </html>"""
-
-            out_path = f"{out_dir}/checkov-report.html"
-            with open(out_path, "w", encoding="utf-8") as fh:
+            </body></html>"""
+            with open(f"{out_dir}/checkov-report.html","w",encoding="utf-8") as fh:
                 fh.write(report)
-            print(f"[Checkov HTML] Generado {out_path} con {total_failed} hallazgos.")
+            print(f"[Checkov HTML] Generado con {total_failed} hallazgos.")
+        run: python3 -c "$PYTHON_SCRIPT"
 
-        run: |
-          python3 -c "$PYTHON_SCRIPT"
-      # ────────────────────────────────────────────────────────────────────
-      # Quality Gate — Generar qg-summary normalizado (CVSSv3)
-      #
-      # Mapeo Checkov → CVSSv3:
-      #   - severity nativa si está presente (CRITICAL/HIGH/MEDIUM/LOW) → directo
-      #   - SIN severity → HIGH por defecto (Checkov OSS no siempre la trae;
-      #     política SEI/CIS: tratar IaC unknown como High por riesgo)
-      #
-      # workflow_blocked si critical/high/medium > 0.
-      # ────────────────────────────────────────────────────────────────────
-      - name: Generar qg-summary-sec-iac-terraform.json
+      - name: Subir HTML + raw JSON
         if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sec-iac-terraform-checkov-raw
+          path: |
+            reports/${{ github.event.repository.name }}/checkov-report.html
+            reports/checkov-raw.json
+          retention-days: 30
+          if-no-files-found: warn
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # JOB 4 · Trivy config (segundo opinion misconfig + secretos en .tf)
+  # ─────────────────────────────────────────────────────────────────────────
+  trivy-config:
+    name: "Trivy config — IaC misconfig"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repositorio
+        uses: actions/checkout@v4
+
+      - name: Crear directorio de reportes
+        run: mkdir -p "reports/${{ github.event.repository.name }}"
+
+      - name: Instalar Trivy
+        run: |
+          # Instalación oficial via install.sh (pin de versión → reproducible)
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+            | sh -s -- -b /usr/local/bin v0.55.2
+          trivy --version
+
+      - name: Ejecutar Trivy en modo config (misconfig + secrets)
+        continue-on-error: true
+        run: |
+          # --scanners misconfig,secret: cubre .tf + secretos embebidos.
+          # --format json + --output para input estable del qg-summary.
+          trivy config . \
+            --scanners misconfig,secret \
+            --format json \
+            --skip-dirs .git \
+            --skip-dirs .github \
+            --skip-dirs .pipelines-centrales \
+            --skip-dirs node_modules \
+            --skip-dirs vendor \
+            --skip-dirs reports \
+            --output reports/trivy-config-raw.json || true
+
+          if [ ! -s reports/trivy-config-raw.json ]; then
+            echo '{"Results":[]}' > reports/trivy-config-raw.json
+          fi
+
+      - name: Generar reporte HTML — Trivy config
+        if: always()
+        env:
+          REPO_NAME: ${{ github.event.repository.name }}
+          REPO_FULL: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          REF: ${{ github.ref_name }}
+          PYTHON_SCRIPT: |
+            import json, html, os, base64
+            from datetime import datetime
+
+            repo_name = os.environ['REPO_NAME']
+            repo_full = os.environ['REPO_FULL']
+            sha       = os.environ['SHA'][:7]
+            ref       = os.environ['REF']
+            fecha     = datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')
+            out_dir   = f"reports/{repo_name}"
+
+            miscfgs = []
+            secrets = []
+            try:
+                data = json.load(open("reports/trivy-config-raw.json", encoding="utf-8"))
+                for r in data.get("Results", []) or []:
+                    target = r.get("Target","?")
+                    for m in r.get("Misconfigurations", []) or []:
+                        m["_target"] = target
+                        miscfgs.append(m)
+                    for s in r.get("Secrets", []) or []:
+                        s["_target"] = target
+                        secrets.append(s)
+            except Exception as e:
+                print(f"[trivy-config HTML] Error leyendo JSON: {e}")
+
+            SEV_CSS = {"CRITICAL":"badge-critical","HIGH":"badge-high","MEDIUM":"badge-medium","LOW":"badge-low","UNKNOWN":"badge-low"}
+            counts  = {"CRITICAL":0,"HIGH":0,"MEDIUM":0,"LOW":0,"UNKNOWN":0}
+            for m in miscfgs:
+                counts[(m.get("Severity") or "UNKNOWN").upper()] = counts.get((m.get("Severity") or "UNKNOWN").upper(), 0) + 1
+
+            m_rows = ""
+            for m in miscfgs[:200]:
+                sev = (m.get("Severity") or "UNKNOWN").upper()
+                css = SEV_CSS.get(sev, "badge-low")
+                mid = html.escape(m.get("ID","?"))
+                title = html.escape(m.get("Title",""))
+                msg   = html.escape(m.get("Message",""))[:250]
+                res   = html.escape(m.get("_target","?"))
+                start = (m.get("CauseMetadata") or {}).get("StartLine","?")
+                m_rows += f'''<tr>
+                  <td class="col-sev"><span class="badge {css}">{sev}</span></td>
+                  <td class="col-rule"><code class="rule">{mid}</code></td>
+                  <td class="col-file file-path">{res}:{start}</td>
+                  <td class="col-desc"><strong>{title}</strong><br><span style="color:#888;font-size:11px">{msg}</span></td>
+                </tr>\n'''
+
+            s_rows = ""
+            for s in secrets[:100]:
+                sev = (s.get("Severity") or "HIGH").upper()
+                css = SEV_CSS.get(sev, "badge-high")
+                rid = html.escape(s.get("RuleID","?"))
+                title = html.escape(s.get("Title","secret"))
+                res = html.escape(s.get("_target","?"))
+                line = s.get("StartLine","?")
+                s_rows += f'''<tr>
+                  <td class="col-sev"><span class="badge {css}">{sev}</span></td>
+                  <td class="col-rule"><code class="rule">{rid}</code></td>
+                  <td class="col-file file-path">{res}:{line}</td>
+                  <td class="col-desc">{title}</td>
+                </tr>\n'''
+
+            def _table(rows, empty_msg):
+                if not rows:
+                    return f'<div class="no-findings"><div class="no-findings-icon">✅</div><h3>{empty_msg}</h3></div>'
+                return f'<table><thead><tr><th class="col-sev">Severidad</th><th class="col-rule">Regla</th><th class="col-file">Archivo:Línea</th><th class="col-desc">Detalle</th></tr></thead><tbody>{rows}</tbody></table>'
+
+            _logo = '<h2 style="color:#00F1C7;margin-bottom:10px;">Simon</h2>'
+            try:
+                if os.path.exists("image/logo_claro.png"):
+                    with open("image/logo_claro.png","rb") as _lf:
+                        _logo = f'<img src="data:image/png;base64,{base64.b64encode(_lf.read()).decode()}" alt="Simon" height="45">'
+            except Exception:
+                pass
+
+            report = f"""<!DOCTYPE html>
+            <html lang="es"><head><meta charset="UTF-8"><title>Trivy config — {repo_name}</title>
+            <style>
+              *{{box-sizing:border-box;margin:0;padding:0}}
+              body{{font-family:'Segoe UI',system-ui,sans-serif;background:#1A1A1A;color:#E7E7E7}}
+              .header{{background:#000000;border-bottom:2px solid #00F1C7;padding:30px 40px}}
+              .tool-badge{{background:rgba(0,241,199,0.1);border:1px solid #00F1C7;color:#00F1C7;padding:6px 16px;border-radius:20px;font-size:13px;font-weight:700}}
+              .header h1{{font-size:26px;font-weight:700;color:#FFFFFF;margin-top:16px}}
+              .meta{{color:#B0B0B0;font-size:13px;margin-top:10px}} .meta span{{margin-right:20px}}
+              .cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:16px;padding:30px;max-width:1100px;margin:0 auto}}
+              .card{{background:#373737;border-radius:8px;padding:20px;text-align:center;border-top:4px solid #00F1C7}}
+              .card-num{{font-size:36px;font-weight:800;color:#FFFFFF}}
+              .card-label{{font-size:11px;color:#B0B0B0;text-transform:uppercase;margin-top:8px;letter-spacing:1px}}
+              .section{{max-width:1100px;margin:0 auto 30px;padding:0 30px}}
+              .section-title{{font-size:16px;font-weight:600;color:#00F1C7;margin-bottom:14px;padding-bottom:8px;border-bottom:1px solid #373737}}
+              .wrap{{background:#000000;border:1px solid #373737;border-radius:8px;overflow:hidden}}
+              table{{width:100%;border-collapse:collapse;table-layout:fixed}}
+              .col-sev{{width:12%}} .col-rule{{width:22%}} .col-file{{width:28%}} .col-desc{{width:38%}}
+              thead{{background:#373737}} th{{padding:14px 16px;color:#E7E7E7;font-size:12px;text-transform:uppercase;text-align:left;letter-spacing:0.5px}}
+              td{{padding:14px 16px;border-bottom:1px solid #373737;font-size:13px;vertical-align:top;color:#D1D1D1;word-wrap:break-word}}
+              tr:hover td{{background:#1A1A1A}}
+              .badge{{display:inline-block;padding:4px 12px;border-radius:12px;font-size:11px;font-weight:bold;text-transform:uppercase}}
+              .badge-critical{{background:rgba(246,61,61,0.15);color:#F63D3D;border:1px solid #F63D3D}}
+              .badge-high{{background:rgba(250,217,0,0.15);color:#FAD900;border:1px solid #FAD900}}
+              .badge-medium{{background:rgba(0,241,199,0.15);color:#00F1C7;border:1px solid #00F1C7}}
+              .badge-low{{background:rgba(136,136,136,0.15);color:#888888;border:1px solid #888888}}
+              .rule{{background:#373737;color:#00F1C7;padding:2px 6px;border-radius:4px;font-size:11px;word-break:break-all}}
+              .file-path{{color:#888888;font-family:monospace;font-size:11px;word-break:break-all}}
+              .no-findings{{text-align:center;padding:60px 40px}} .no-findings-icon{{font-size:52px;margin-bottom:14px}}
+              .no-findings h3{{font-size:18px;color:#4EDA56;margin-bottom:6px}}
+              .footer{{text-align:center;padding:30px;color:#888888;font-size:12px;border-top:1px solid #373737;margin-top:20px}}
+            </style></head><body>
+              <div class="header">
+                <div class="logo-container">{_logo}</div>
+                <span class="tool-badge">TRIVY CONFIG — IaC MISCONFIG</span>
+                <h1>Trivy Config Report</h1>
+                <div class="meta">
+                  <span>📦 {html.escape(repo_full)}</span>
+                  <span>🌿 {html.escape(ref)}</span>
+                  <span>🔖 {sha}</span>
+                  <span>🕐 {fecha}</span>
+                </div>
+              </div>
+              <div class="cards">
+                <div class="card"><div class="card-num">{len(miscfgs)}</div><div class="card-label">Misconfigurations</div></div>
+                <div class="card"><div class="card-num">{len(secrets)}</div><div class="card-label">Secretos</div></div>
+                <div class="card"><div class="card-num">{counts.get('CRITICAL',0)+counts.get('HIGH',0)}</div><div class="card-label">Critical + High</div></div>
+              </div>
+              <div class="section"><div class="section-title">Misconfigurations</div><div class="wrap">{_table(m_rows, "Sin misconfigurations")}</div></div>
+              <div class="section"><div class="section-title">Secretos embebidos</div><div class="wrap">{_table(s_rows, "Sin secretos detectados en IaC")}</div></div>
+              <div class="footer">Generado por <strong>pipelines-centrales</strong> · Equipo Cybersecurity · Simon · {fecha}</div>
+            </body></html>"""
+            with open(f"{out_dir}/trivy-config-report.html","w",encoding="utf-8") as fh:
+                fh.write(report)
+            print(f"[trivy-config HTML] Generado con {len(miscfgs)} miscfg + {len(secrets)} secrets.")
+        run: python3 -c "$PYTHON_SCRIPT"
+
+      - name: Subir HTML + raw JSON
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sec-iac-terraform-trivy-config-raw
+          path: |
+            reports/${{ github.event.repository.name }}/trivy-config-report.html
+            reports/trivy-config-raw.json
+          retention-days: 30
+          if-no-files-found: warn
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # JOB 5 · QG-SUMMARY — Consolida las 4 herramientas en un solo
+  # qg-summary-sec-iac-terraform.json (input del consolidador global).
+  #
+  # Mapeo CVSSv3 por herramienta:
+  #   terraform validate: error → critical (IaC no compila → riesgo alto)
+  #                       warning → low
+  #   terraform fmt:      unformatted → info (cosmético)
+  #   tflint:             error → medium · warning → low · notice/info → info
+  #   Checkov:            CRITICAL/HIGH/MEDIUM/LOW nativos; sin severity → HIGH
+  #   Trivy config:       CRITICAL/HIGH/MEDIUM/LOW/UNKNOWN nativos
+  #
+  # workflow_blocked si critical/high/medium > 0 (suma de los 4 tools).
+  # ═══════════════════════════════════════════════════════════════════════
+  qg-summary:
+    name: "Quality Gate — Terraform IaC Summary"
+    needs: [terraform-native, tflint, checkov, trivy-config]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Descargar raw JSONs de las 4 herramientas
+        uses: actions/download-artifact@v4
+        with:
+          pattern: sec-iac-terraform-*-raw
+          path: raw/
+          merge-multiple: false
+
+      - name: Generar qg-summary-sec-iac-terraform.json
         env:
           REPO_NAME: ${{ github.event.repository.name }}
           PYTHON_SCRIPT: |
             import json, os
+            from pathlib import Path
 
             repo_name = os.environ['REPO_NAME']
-            raw_path  = "reports/checkov-raw.json"
+            out_dir   = f"reports/{repo_name}"
+            os.makedirs(out_dir, exist_ok=True)
 
-            failed_checks = []
-            scan_status   = "completed"
-            scan_reason   = ""
+            counts = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
+            top    = []
+            tools_run = []
 
-            if os.path.exists(raw_path):
+            # ── terraform fmt + validate ─────────────────────────────────
+            native_path = "raw/sec-iac-terraform-native-raw/terraform-native-raw.json"
+            if os.path.exists(native_path):
+                tools_run.append("terraform-native")
                 try:
-                    data = json.load(open(raw_path, encoding="utf-8"))
+                    d = json.load(open(native_path, encoding="utf-8"))
+                    # fmt
+                    unformatted = d.get("fmt", {}).get("unformatted_files", []) or []
+                    counts["info"] += len(unformatted)
+                    for f in unformatted[:3]:
+                        top.append({
+                            "tool":"terraform-fmt","severity":"info","rule_id":"fmt/unformatted",
+                            "location": f, "description": "Archivo Terraform sin formato canónico",
+                        })
+                    # validate
+                    for entry in d.get("validate", {}).get("by_dir", []) or []:
+                        for diag in entry.get("diagnostics", []) or []:
+                            sev = (diag.get("severity") or "info").lower()
+                            if sev == "error":
+                                counts["critical"] += 1
+                                sev_cvss = "critical"
+                            elif sev == "warning":
+                                counts["low"] += 1
+                                sev_cvss = "low"
+                            else:
+                                counts["info"] += 1
+                                sev_cvss = "info"
+                            rng = diag.get("range") or {}
+                            fname = rng.get("filename", entry.get("dir","?"))
+                            line  = (rng.get("start") or {}).get("line","?")
+                            top.append({
+                                "tool":"terraform-validate","severity":sev_cvss,
+                                "rule_id": diag.get("summary","validate")[:60],
+                                "location": f"{fname}:{line}",
+                                "description": str(diag.get("summary",""))[:200],
+                            })
+                except Exception as e:
+                    print(f"[terraform-native] Error procesando JSON: {e}")
+
+            # ── tflint ───────────────────────────────────────────────────
+            tflint_path = "raw/sec-iac-terraform-tflint-raw/tflint-raw.json"
+            if os.path.exists(tflint_path):
+                tools_run.append("tflint")
+                try:
+                    data = json.load(open(tflint_path, encoding="utf-8"))
+                    SEV_TFLINT = {"error":"medium","warning":"low","notice":"info","info":"info"}
+                    all_issues = []
+                    for entry in (data if isinstance(data, list) else [data]):
+                        d = entry.get("_dir","?")
+                        for it in entry.get("issues", []) or []:
+                            it["_dir"] = d
+                            all_issues.append(it)
+                    for it in all_issues:
+                        sev_native = (it.get("rule",{}).get("severity") or "notice").lower()
+                        counts[SEV_TFLINT.get(sev_native, "info")] += 1
+                    sev_order = {"error":0,"warning":1,"notice":2,"info":3}
+                    for it in sorted(all_issues, key=lambda x: sev_order.get((x.get("rule",{}).get("severity") or "notice").lower(), 99))[:5]:
+                        rule = it.get("rule",{}) or {}
+                        sev_native = (rule.get("severity") or "notice").lower()
+                        rng = it.get("range") or {}
+                        fname = rng.get("filename","?")
+                        line  = (rng.get("start") or {}).get("line","?")
+                        top.append({
+                            "tool":"tflint","severity":SEV_TFLINT.get(sev_native,"info"),
+                            "rule_id": rule.get("name","?"),
+                            "location": f"{fname}:{line}",
+                            "description": str(it.get("message",""))[:200],
+                        })
+                except Exception as e:
+                    print(f"[tflint] Error procesando JSON: {e}")
+
+            # ── Checkov ──────────────────────────────────────────────────
+            ck_path = "raw/sec-iac-terraform-checkov-raw/checkov-raw.json"
+            if os.path.exists(ck_path):
+                tools_run.append("checkov")
+                try:
+                    data = json.load(open(ck_path, encoding="utf-8"))
+                    SEV_CK = {"CRITICAL":"critical","HIGH":"high","MEDIUM":"medium","LOW":"low","INFO":"info"}
+                    failed = []
                     reports = data if isinstance(data, list) else [data]
                     for rep in reports:
-                        if "results" in rep:
-                            failed_checks.extend(rep["results"].get("failed_checks", []))
+                        failed.extend((rep.get("results") or {}).get("failed_checks", []) or [])
+                    for c in failed:
+                        sev_native = (c.get("severity") or "HIGH").upper()
+                        counts[SEV_CK.get(sev_native, "high")] += 1
+                    sev_order = {"CRITICAL":0,"HIGH":1,"MEDIUM":2,"LOW":3,"INFO":4}
+                    for c in sorted(failed, key=lambda x: sev_order.get((x.get("severity") or "HIGH").upper(), 99))[:5]:
+                        sev_native = (c.get("severity") or "HIGH").upper()
+                        rng = c.get("file_line_range", ["?","?"])
+                        line_str = f"{rng[0]}-{rng[1]}" if isinstance(rng, list) and len(rng)==2 else "?"
+                        top.append({
+                            "tool":"checkov","severity":SEV_CK.get(sev_native,"high"),
+                            "rule_id": c.get("check_id","?"),
+                            "location": f"{c.get('file_path','?')}:{line_str}",
+                            "description": str(c.get("check_name",""))[:200],
+                        })
                 except Exception as e:
-                    scan_status = "error"
-                    scan_reason = f"No se pudo leer JSON: {e}"
-            else:
-                scan_status = "skipped"
-                scan_reason = "No se encontró checkov-raw.json (¿no hay Terraform en el repo?)"
+                    print(f"[checkov] Error procesando JSON: {e}")
 
-            SEV_MAP = {"CRITICAL":"critical","HIGH":"high","MEDIUM":"medium","LOW":"low","INFO":"info"}
-            counts  = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
+            # ── Trivy config ─────────────────────────────────────────────
+            tv_path = "raw/sec-iac-terraform-trivy-config-raw/trivy-config-raw.json"
+            if os.path.exists(tv_path):
+                tools_run.append("trivy-config")
+                try:
+                    data = json.load(open(tv_path, encoding="utf-8"))
+                    SEV_TV = {"CRITICAL":"critical","HIGH":"high","MEDIUM":"medium","LOW":"low","UNKNOWN":"low"}
+                    miscfgs, secrets = [], []
+                    for r in data.get("Results", []) or []:
+                        target = r.get("Target","?")
+                        for m in r.get("Misconfigurations", []) or []:
+                            m["_target"] = target; miscfgs.append(m)
+                        for s in r.get("Secrets", []) or []:
+                            s["_target"] = target; secrets.append(s)
+                    for m in miscfgs:
+                        sev_native = (m.get("Severity") or "UNKNOWN").upper()
+                        counts[SEV_TV.get(sev_native, "low")] += 1
+                    for s in secrets:
+                        sev_native = (s.get("Severity") or "HIGH").upper()
+                        counts[SEV_TV.get(sev_native, "high")] += 1
+                    sev_order = {"CRITICAL":0,"HIGH":1,"MEDIUM":2,"LOW":3,"UNKNOWN":4}
+                    for m in sorted(miscfgs, key=lambda x: sev_order.get((x.get("Severity") or "UNKNOWN").upper(), 99))[:5]:
+                        sev_native = (m.get("Severity") or "UNKNOWN").upper()
+                        start = (m.get("CauseMetadata") or {}).get("StartLine","?")
+                        top.append({
+                            "tool":"trivy-config","severity":SEV_TV.get(sev_native,"low"),
+                            "rule_id": m.get("ID","?"),
+                            "location": f"{m.get('_target','?')}:{start}",
+                            "description": str(m.get("Title") or m.get("Message") or "")[:200],
+                        })
+                    for s in secrets[:3]:
+                        sev_native = (s.get("Severity") or "HIGH").upper()
+                        top.append({
+                            "tool":"trivy-config","severity":SEV_TV.get(sev_native,"high"),
+                            "rule_id": s.get("RuleID","secret"),
+                            "location": f"{s.get('_target','?')}:{s.get('StartLine','?')}",
+                            "description": str(s.get("Title","secret"))[:200],
+                        })
+                except Exception as e:
+                    print(f"[trivy-config] Error procesando JSON: {e}")
 
-            for c in failed_checks:
-                sev_native = (c.get("severity") or "HIGH").upper()  # default HIGH (política SEI/CIS)
-                sev_cvss   = SEV_MAP.get(sev_native, "high")
-                counts[sev_cvss] += 1
-
-            # Top 10 ordenados por severidad
-            sev_order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "INFO": 4}
-            failed_checks.sort(key=lambda c: sev_order.get((c.get("severity") or "HIGH").upper(), 99))
-
-            top = []
-            for c in failed_checks[:10]:
-                sev_native = (c.get("severity") or "HIGH").upper()
-                line_range = c.get("file_line_range", ["?","?"])
-                line_str   = f"{line_range[0]}-{line_range[1]}" if isinstance(line_range, list) and len(line_range) == 2 else "?"
-                top.append({
-                    "tool":        "checkov",
-                    "severity":    SEV_MAP.get(sev_native, "high"),
-                    "rule_id":     c.get("check_id", "?"),
-                    "location":    f"{c.get('file_path','?')}:{line_str}",
-                    "description": str(c.get("check_name", ""))[:200],
-                })
-
+            # ── Decisión global ──────────────────────────────────────────
             blocked = counts["critical"] > 0 or counts["high"] > 0 or counts["medium"] > 0
             reason  = ""
             if blocked:
                 parts = []
-                for sev in ("critical", "high", "medium"):
+                for sev in ("critical","high","medium"):
                     if counts[sev]:
                         parts.append(f"{counts[sev]} {sev}")
                 reason = ", ".join(parts)
 
+            scan_status = "completed" if tools_run else "skipped"
+            scan_reason = "" if tools_run else "Ninguna herramienta produjo raw JSON"
+
+            sev_priority = {"critical":0,"high":1,"medium":2,"low":3,"info":4}
+            top.sort(key=lambda f: sev_priority.get(f["severity"], 99))
+            top = top[:10]
+
             summary = {
                 "schema_version":         "1.0",
                 "workflow":               "sec-iac-terraform",
-                "workflow_display_name":  "IaC Security (Terraform)",
+                "workflow_display_name":  "IaC Terraform Full (fmt+validate+tflint+Checkov+Trivy)",
                 "stage_number":           5,
-                "tools":                  ["checkov"],
+                "tools":                  tools_run,
                 "scan_status":            scan_status,
                 "scan_status_reason":     scan_reason,
                 "severity_counts":        counts,
@@ -341,22 +1133,11 @@ jobs:
                 "block_reason":           reason,
             }
 
-            out_path = f"reports/{repo_name}/qg-summary-sec-iac-terraform.json"
+            out_path = f"{out_dir}/qg-summary-sec-iac-terraform.json"
             with open(out_path, "w", encoding="utf-8") as fh:
                 json.dump(summary, fh, indent=2, ensure_ascii=False)
-            print(f"[qg-summary] sec-iac-terraform → {counts} blocked={blocked} status={scan_status}")
+            print(f"[qg-summary] sec-iac-terraform tools={tools_run} → {counts} blocked={blocked}")
         run: python3 -c "$PYTHON_SCRIPT"
-
-      - name: Subir reporte HTML + JSON raw
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: security-iac-checkov
-          path: |
-            reports/${{ github.event.repository.name }}/checkov-report.html
-            reports/checkov-raw.json
-          retention-days: 30
-          if-no-files-found: warn
 
       - name: Subir qg-summary (input para Quality Gate consolidador)
         if: always()
@@ -366,60 +1147,3 @@ jobs:
           path: reports/${{ github.event.repository.name }}/qg-summary-sec-iac-terraform.json
           retention-days: 30
           if-no-files-found: warn
-
-      # ════════════════════════════════════════════════════════════════════
-      # DEPRECATED — Creación de Issues directos (Checkov)
-      #
-      # Reemplazado en Fase 2 por el comentario consolidado en PR + step
-      # summary + artifact JSON, orquestado desde quality-gate-consolidated
-      # en el seguridad.yml del consumidor.
-      # ════════════════════════════════════════════════════════════════════
-      # - name: Crear Issues en GitHub (Checkov - Límite 10)
-      #   if: always()
-      #   continue-on-error: true
-      #   env:
-      #     GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      #   run: |
-      #     cat << 'EOF' > create_issues_checkov.py
-      #     import json, os, subprocess
-      #     raw_path = 'reports/checkov-raw.json'
-      #     if not os.path.exists(raw_path):
-      #         exit(0)
-      #     try:
-      #         data = json.load(open(raw_path, encoding='utf-8'))
-      #         reports = data if isinstance(data, list) else [data]
-      #         failed_checks = []
-      #         for rep in reports:
-      #             if 'results' in rep and 'failed_checks' in rep['results']:
-      #                 failed_checks.extend(rep['results']['failed_checks'])
-      #     except Exception:
-      #         exit(0)
-      #     try:
-      #         cmd_list = ['gh', 'issue', 'list', '--state', 'open', '--json', 'title']
-      #         existing_titles = [i['title'] for i in json.loads(subprocess.check_output(cmd_list).decode('utf-8'))]
-      #     except Exception:
-      #         existing_titles = []
-      #     MAX_ISSUES = 10
-      #     creados = 0
-      #     for check in failed_checks:
-      #         if creados >= MAX_ISSUES:
-      #             break
-      #         check_id   = check.get('check_id', 'unknown')
-      #         check_name = check.get('check_name', 'Sin descripción')
-      #         file_path  = check.get('file_path', 'unknown')
-      #         resource   = check.get('resource', 'unknown')
-      #         sev        = check.get('severity') or 'HIGH'
-      #         title = f"🚨 [IaC] Checkov: {check_id} en {resource}"
-      #         if title not in existing_titles:
-      #             body = (f"### 🏗️ IaC vuln\n\n**Tool**: Checkov\n**Sev**: {sev}\n"
-      #                     f"**Resource**: `{resource}`\n**File**: `{file_path}`\n"
-      #                     f"**Rule**: `{check_id}`\n> {check_name}")
-      #             try:
-      #                 subprocess.run(['gh', 'issue', 'create', '--title', title, '--body', body], check=True)
-      #                 existing_titles.append(title)
-      #                 creados += 1
-      #             except Exception:
-      #                 pass
-      #     print(f"[Issues Checkov] Creados: {creados}")
-      #     EOF
-      #     python3 create_issues_checkov.py
