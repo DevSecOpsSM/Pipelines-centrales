@@ -73,11 +73,13 @@ jobs:
   #     NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
 
   # ──────────────────────────────────────────────────────────────────────
-  # ETAPA 5 — IaC: Análisis de Terraform (Checkov)
+  # ETAPA 5 — IaC: Análisis Full de Terraform
+  # Herramientas: terraform fmt · terraform validate · tflint · Checkov · Trivy config
+  # Emite un único qg-summary-sec-iac-terraform.json consolidado.
   # ──────────────────────────────────────────────────────────────────────
   iac:
-    name: "Etapa 5 · IaC (Checkov)"
-    uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-iac-terraform.yml@feat/defectdojo-upload
+    name: "Etapa 5 · IaC Terraform Full"
+    uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-iac-terraform.yml@v1.0.0
 
   # ──────────────────────────────────────────────────────────────────────
   # ETAPA 6 — Seguridad de contenedores (KICS + Hadolint + Trivy)
@@ -297,8 +299,12 @@ jobs:
         run: |
           set -e
           mkdir -p raw-jsons
+          # Incluye los 3 JSONs auxiliares del workflow sec-iac-terraform
+          # (terraform-native-raw.json, tflint-raw.json, trivy-config-raw.json)
+          # además del checkov-raw.json primario.
           for name in gitleaks-raw.json semgrep-raw.json dependency-check-report.json \
-                     checkov-raw.json kics-results.json hadolint-raw.json \
+                     checkov-raw.json terraform-native-raw.json tflint-raw.json \
+                     trivy-config-raw.json kics-results.json hadolint-raw.json \
                      trivy-raw.json sonar-issues.json; do
             find all-artifacts -name "$name" -exec cp {} raw-jsons/ \; 2>/dev/null || true
           done
