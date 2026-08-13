@@ -5,7 +5,10 @@
 #   - terraform validate: validación sintáctica/semántica (HashiCorp oficial)
 #   - tflint           : linter + provider rules + deprecated syntax
 #   - Checkov          : seguridad + grafos + contexto (Prisma Cloud)
-#   - Trivy config     : segundo opinion de misconfig + secretos en .tf (Aqua)
+#
+# NOTA: Trivy config fue descartado por inestabilidad de assets upstream
+# (Aquasec rota tarballs de versiones antiguas y install.sh falla silencioso).
+# Si se necesita segundo opinion, evaluar KICS (ya presente en sec-containers).
 #
 # Modo Auditoría: reporta hallazgos sin abortar los jobs de escaneo.
 # La decisión pass/fail la toma el quality-gate-consolidated global aguas
@@ -724,6 +727,7 @@ jobs:
           retention-days: 30
           if-no-files-found: warn
 
+<<<<<<< Updated upstream
   # ─────────────────────────────────────────────────────────────────────────
   # JOB 4 · Trivy config (segundo opinion misconfig + secretos en .tf)
   # ─────────────────────────────────────────────────────────────────────────
@@ -923,8 +927,10 @@ jobs:
           retention-days: 30
           if-no-files-found: warn
 
+=======
+>>>>>>> Stashed changes
   # ═══════════════════════════════════════════════════════════════════════
-  # JOB 5 · QG-SUMMARY — Consolida las 4 herramientas en un solo
+  # JOB 4 · QG-SUMMARY — Consolida las 3 herramientas en un solo
   # qg-summary-sec-iac-terraform.json (input del consolidador global).
   #
   # Mapeo CVSSv3 por herramienta:
@@ -933,20 +939,19 @@ jobs:
   #   terraform fmt:      unformatted → info (cosmético)
   #   tflint:             error → medium · warning → low · notice/info → info
   #   Checkov:            CRITICAL/HIGH/MEDIUM/LOW nativos; sin severity → HIGH
-  #   Trivy config:       CRITICAL/HIGH/MEDIUM/LOW/UNKNOWN nativos
   #
-  # workflow_blocked si critical/high/medium > 0 (suma de los 4 tools).
+  # workflow_blocked si critical/high/medium > 0 (suma de los 3 tools).
   # ═══════════════════════════════════════════════════════════════════════
   qg-summary:
     name: "Quality Gate — Terraform IaC Summary"
-    needs: [terraform-native, tflint, checkov, trivy-config]
+    needs: [terraform-native, tflint, checkov]
     if: always()
     runs-on: ubuntu-latest
     permissions:
       contents: read
 
     steps:
-      - name: Descargar raw JSONs de las 4 herramientas
+      - name: Descargar raw JSONs de las 3 herramientas
         uses: actions/download-artifact@v4
         with:
           pattern: sec-iac-terraform-*-raw
@@ -1067,47 +1072,6 @@ jobs:
                 except Exception as e:
                     print(f"[checkov] Error procesando JSON: {e}")
 
-            # ── Trivy config ─────────────────────────────────────────────
-            tv_path = "raw/sec-iac-terraform-trivy-config-raw/trivy-config-raw.json"
-            if os.path.exists(tv_path):
-                tools_run.append("trivy-config")
-                try:
-                    data = json.load(open(tv_path, encoding="utf-8"))
-                    SEV_TV = {"CRITICAL":"critical","HIGH":"high","MEDIUM":"medium","LOW":"low","UNKNOWN":"low"}
-                    miscfgs, secrets = [], []
-                    for r in data.get("Results", []) or []:
-                        target = r.get("Target","?")
-                        for m in r.get("Misconfigurations", []) or []:
-                            m["_target"] = target; miscfgs.append(m)
-                        for s in r.get("Secrets", []) or []:
-                            s["_target"] = target; secrets.append(s)
-                    for m in miscfgs:
-                        sev_native = (m.get("Severity") or "UNKNOWN").upper()
-                        counts[SEV_TV.get(sev_native, "low")] += 1
-                    for s in secrets:
-                        sev_native = (s.get("Severity") or "HIGH").upper()
-                        counts[SEV_TV.get(sev_native, "high")] += 1
-                    sev_order = {"CRITICAL":0,"HIGH":1,"MEDIUM":2,"LOW":3,"UNKNOWN":4}
-                    for m in sorted(miscfgs, key=lambda x: sev_order.get((x.get("Severity") or "UNKNOWN").upper(), 99))[:5]:
-                        sev_native = (m.get("Severity") or "UNKNOWN").upper()
-                        start = (m.get("CauseMetadata") or {}).get("StartLine","?")
-                        top.append({
-                            "tool":"trivy-config","severity":SEV_TV.get(sev_native,"low"),
-                            "rule_id": m.get("ID","?"),
-                            "location": f"{m.get('_target','?')}:{start}",
-                            "description": str(m.get("Title") or m.get("Message") or "")[:200],
-                        })
-                    for s in secrets[:3]:
-                        sev_native = (s.get("Severity") or "HIGH").upper()
-                        top.append({
-                            "tool":"trivy-config","severity":SEV_TV.get(sev_native,"high"),
-                            "rule_id": s.get("RuleID","secret"),
-                            "location": f"{s.get('_target','?')}:{s.get('StartLine','?')}",
-                            "description": str(s.get("Title","secret"))[:200],
-                        })
-                except Exception as e:
-                    print(f"[trivy-config] Error procesando JSON: {e}")
-
             # ── Decisión global ──────────────────────────────────────────
             blocked = counts["critical"] > 0 or counts["high"] > 0 or counts["medium"] > 0
             reason  = ""
@@ -1128,7 +1092,7 @@ jobs:
             summary = {
                 "schema_version":         "1.0",
                 "workflow":               "sec-iac-terraform",
-                "workflow_display_name":  "IaC Terraform Full (fmt+validate+tflint+Checkov+Trivy)",
+                "workflow_display_name":  "IaC Terraform Full (fmt+validate+tflint+Checkov)",
                 "stage_number":           5,
                 "tools":                  tools_run,
                 "scan_status":            scan_status,

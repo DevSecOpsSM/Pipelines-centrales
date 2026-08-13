@@ -74,7 +74,7 @@ jobs:
 
   # ──────────────────────────────────────────────────────────────────────
   # ETAPA 5 — IaC: Análisis Full de Terraform
-  # Herramientas: terraform fmt · terraform validate · tflint · Checkov · Trivy config
+  # Herramientas: terraform fmt · terraform validate · tflint · Checkov
   # Emite un único qg-summary-sec-iac-terraform.json consolidado.
   # ──────────────────────────────────────────────────────────────────────
   iac:
@@ -299,12 +299,12 @@ jobs:
         run: |
           set -e
           mkdir -p raw-jsons
-          # Incluye los 3 JSONs auxiliares del workflow sec-iac-terraform
-          # (terraform-native-raw.json, tflint-raw.json, trivy-config-raw.json)
-          # además del checkov-raw.json primario.
+          # Incluye los 2 JSONs auxiliares del workflow sec-iac-terraform
+          # (terraform-native-raw.json, tflint-raw.json) además del
+          # checkov-raw.json primario.
           for name in gitleaks-raw.json semgrep-raw.json dependency-check-report.json \
                      checkov-raw.json terraform-native-raw.json tflint-raw.json \
-                     trivy-config-raw.json kics-results.json hadolint-raw.json \
+                     kics-results.json hadolint-raw.json \
                      trivy-raw.json sonar-issues.json; do
             find all-artifacts -name "$name" -exec cp {} raw-jsons/ \; 2>/dev/null || true
           done
