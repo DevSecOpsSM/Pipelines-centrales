@@ -359,6 +359,67 @@ def tabla_distribucion_severidad(
 
 
 # ---------------------------------------------------------------------------
+# Tabla secundaria estilizada (top reglas, top archivos, top librerías, etc.)
+# ---------------------------------------------------------------------------
+def styled_secondary_table(
+    data: list,
+    col_widths: list,
+    first_col_align: str = "LEFT",
+    numeric_cols_center: bool = True,
+) -> Table:
+    """
+    Construye una tabla secundaria (top-N reglas, archivos, categorías, etc.)
+    con el mismo lenguaje visual: encabezado dark, filas alternas, bordes
+    sutiles teal.
+
+    `data[0]` es la fila de encabezado; el resto son filas de datos.
+    """
+    tabla = Table(data, colWidths=col_widths, hAlign="LEFT")
+
+    style = [
+        # Encabezado dark
+        ("BACKGROUND", (0, 0), (-1, 0), DARK),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
+        ("FONTNAME", (0, 0), (-1, 0), FONT_SANS_BOLD),
+        ("FONTSIZE", (0, 0), (-1, 0), 9.5),
+        ("ALIGN", (0, 0), (-1, 0), "CENTER"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("BOTTOMPADDING", (0, 0), (-1, 0), 8),
+        ("TOPPADDING", (0, 0), (-1, 0), 8),
+        # Cuerpo
+        ("FONTNAME", (0, 1), (-1, -1), FONT_SANS),
+        ("FONTSIZE", (0, 1), (-1, -1), 9),
+        ("TEXTCOLOR", (0, 1), (-1, -1), BODY_TEXT),
+        ("ALIGN", (0, 1), (0, -1), first_col_align),
+        ("LEFTPADDING", (0, 1), (0, -1), 8),
+        ("RIGHTPADDING", (0, 1), (-1, -1), 8),
+        ("TOPPADDING", (0, 1), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 1), (-1, -1), 5),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, ROW_ALT]),
+        ("LINEBELOW", (0, 0), (-1, 0), 1.0, TEAL_DARK),
+        ("BOX", (0, 0), (-1, -1), 0.4, GRAY_BORDER),
+    ]
+
+    if numeric_cols_center and len(data[0]) > 1:
+        # Centrar todas las columnas numéricas (todo lo que no sea la primera)
+        style.append(("ALIGN", (1, 1), (-1, -1), "CENTER"))
+
+    tabla.setStyle(TableStyle(style))
+    return tabla
+
+
+# ---------------------------------------------------------------------------
+# Helper: HTML para el bloque "Estado del análisis"
+# ---------------------------------------------------------------------------
+def status_html(passed: bool, label_pass: str = "APROBADO",
+                label_fail: str = "FALLIDO") -> str:
+    """Devuelve el fragmento HTML para el estado (aprobado/fallido)."""
+    color = "#26C130" if passed else "#E31952"
+    label = label_pass if passed else label_fail
+    return f"<font color='{color}'><b>{label}</b></font>"
+
+
+# ---------------------------------------------------------------------------
 # Helper: márgenes recomendados para SimpleDocTemplate
 # ---------------------------------------------------------------------------
 DOC_MARGINS = dict(

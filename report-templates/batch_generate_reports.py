@@ -65,13 +65,20 @@ for _stream in (sys.stdout, sys.stderr):
 
 # Reportlab para el PDF ejecutivo consolidado
 from reportlab.lib.pagesizes import letter
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
-from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY
 from reportlab.platypus import (
-    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
+    SimpleDocTemplate, Paragraph, Spacer, PageBreak,
 )
-from reportlab.lib import colors
+
+# Branding común Template_SM_Ciber
+from branding_sm import (
+    DOC_MARGINS,
+    build_styles,
+    page_decorations_factory,
+    status_html,
+    styled_secondary_table,
+    tabla_distribucion_severidad,
+)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -420,7 +427,14 @@ def run_individual_generators(
 # ═══════════════════════════════════════════════════════════════════════════
 
 class ExecutiveSummaryPDF:
-    """Genera el PDF ejecutivo consolidado a partir de los results de todas las herramientas."""
+    """
+    Genera el PDF ejecutivo consolidado con branding Template_SM_Ciber.
+    Delega a branding_sm todo el layout (header/footer/watermark, estilos,
+    tabla de distribución estándar).
+    """
+
+    REPORT_TITLE = "Reporte Ejecutivo · SSDLC"
+    CODIGO = "DevSecOps-EJECUTIVO"
 
     # Tabla CVSSv3 institucional (misma que quality_gate_consolidator.py)
     THRESHOLDS = {
@@ -438,162 +452,126 @@ class ExecutiveSummaryPDF:
         self.repo = repo
         self.sha = (sha or "")[:7]
 
-        # logo_filename puede ser un nombre relativo (compat) o un path absoluto
-        # ya resuelto por resolve_logo_path(). Si es absoluto se usa tal cual.
         _p = Path(logo_filename)
-        self.logo_path = _p if _p.is_absolute() else (SCRIPT_DIR / logo_filename)
-        self.test_type = "DevSecOps-Ejecutivo"
+        self.logo_path = str(_p if _p.is_absolute() else (SCRIPT_DIR / logo_filename))
 
+        # Totales acumulados por severidad institucional (info se agrega a low
+        # para la tabla estándar; queda separado en el manifest y en la sección
+        # de umbrales por retro-compatibilidad con la tabla CVSSv3)
         self.totals = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
         for r in results:
             for sev in self.totals:
                 self.totals[sev] += r["counts"].get(sev, 0)
-        self.totals["total"] = sum(self.totals[k] for k in ("critical", "high", "medium", "low", "info"))
+        self.totals["total"] = sum(
+            self.totals[k] for k in ("critical", "high", "medium", "low", "info")
+        )
 
-        self.styles = getSampleStyleSheet()
-        self._setup_styles()
+        # Stats para tabla_distribucion_severidad (fusiona info en low)
+        self.stats_for_tabla = {
+            "critical": self.totals["critical"],
+            "high":     self.totals["high"],
+            "medium":   self.totals["medium"],
+            "low":      self.totals["low"] + self.totals["info"],
+        }
+        self.total_institucional = sum(self.stats_for_tabla.values())
 
-    def _setup_styles(self):
-        self.styles.add(ParagraphStyle(
-            name='CustomTitle',
-            parent=self.styles['Heading1'],
-            fontSize=26, textColor=colors.HexColor('#1a1a1a'),
-            spaceAfter=30, alignment=TA_CENTER, fontName='Helvetica-Bold',
-        ))
-        self.styles.add(ParagraphStyle(
-            name='CustomHeading2',
-            parent=self.styles['Heading2'],
-            fontSize=14, textColor=colors.HexColor('#2c3e50'),
-            spaceAfter=12, spaceBefore=12, fontName='Helvetica-Bold',
-            borderColor=colors.HexColor('#00e5bd'), borderWidth=2,
-            borderPadding=8, borderRadius=3,
-        ))
-        self.styles.add(ParagraphStyle(
-            name='BodyJustified',
-            parent=self.styles['BodyText'],
-            alignment=TA_JUSTIFY, fontSize=10, leading=13,
-            textColor=colors.HexColor('#2c3e50'),
-        ))
+        self.styles = build_styles()
 
-    def draw_header(self, canvas, doc):
-        canvas.saveState()
-        width, height = letter
-
-        if self.logo_path.exists():
-            try:
-                canvas.drawImage(str(self.logo_path), 40, height - 70, width=140, height=40,
-                                 preserveAspectRatio=True, mask='auto')
-            except Exception as exc:
-                # Logo corrupto o no reconocible como imagen — continuar sin él
-                print(f"[WARN] Logo no cargable ({exc}) — continuando sin logo", file=sys.stderr)
-
-        data = [
-            ['Código:', self.test_type],
-            ['Vigente desde:', datetime.now().strftime('%d/%m/%Y')],
-            ['Clasificación:', 'Confidencial'],
-        ]
-        t = Table(data, colWidths=[80, 100])
-        t.setStyle(TableStyle([
-            ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
-            ('FONTNAME', (1, 0), (1, -1), 'Helvetica'),
-            ('SIZE', (0, 0), (-1, -1), 9),
-            ('TEXTCOLOR', (0, 0), (-1, -1), colors.HexColor('#333333')),
-            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
-            ('TOPPADDING', (0, 0), (-1, -1), 2),
-        ]))
-        t.wrapOn(canvas, width, height)
-        t.drawOn(canvas, width - 220, height - 65)
-
-        canvas.setStrokeColor(colors.HexColor('#00e5bd'))
-        canvas.setLineWidth(1.5)
-        canvas.line(40, height - 80, width - 40, height - 80)
-
-        canvas.setFont('Helvetica', 8)
-        canvas.setFillColor(colors.gray)
-        canvas.drawCentredString(width / 2.0, 30, f"Página {canvas.getPageNumber()}")
-        canvas.restoreState()
+    def _page_callback(self):
+        return page_decorations_factory(
+            report_title=self.REPORT_TITLE,
+            codigo=self.CODIGO,
+            logo_path=self.logo_path,
+        )
 
     def _cover(self):
-        elements = [Spacer(1, 1.2 * inch)]
-        elements.append(Paragraph("REPORTE EJECUTIVO", self.styles['CustomTitle']))
-        elements.append(Paragraph("Análisis Integrado de Seguridad SSDLC",
-                                  self.styles['Heading2']))
-        elements.append(Spacer(1, 0.4 * inch))
+        elements = [Spacer(1, 1.4 * inch),
+                    Paragraph("REPORTE EJECUTIVO SSDLC", self.styles["CustomTitle"]),
+                    Paragraph("Análisis integrado de seguridad · Ciberseguridad",
+                              self.styles["CustomSubtitle"]),
+                    Spacer(1, 0.35 * inch)]
         elements.append(Paragraph(
             f"<b>Repositorio:</b> {self.repo}<br/>"
             f"<b>Commit:</b> {self.sha or '—'}<br/>"
             f"<b>Fecha:</b> {datetime.now().strftime('%d/%m/%Y %H:%M')}<br/>"
-            f"<b>Metodología:</b> OWASP Top 10 + CVSSv3 + Quality Gate Institucional",
-            self.styles['BodyJustified'],
+            f"<b>Metodología:</b> OWASP Top 10 + CVSSv3 + Quality Gate institucional",
+            self.styles["BodyJustified"],
         ))
         elements.append(PageBreak())
         return elements
 
     def _toc(self):
-        elements = [Paragraph("TABLA DE CONTENIDOS", self.styles['CustomHeading2']),
-                    Spacer(1, 0.2 * inch)]
-        elements.append(Paragraph("1. Veredicto Global del Quality Gate", self.styles['Normal']))
-        elements.append(Paragraph("2. Resumen por Herramienta", self.styles['Normal']))
-        elements.append(Paragraph("3. Tabla CVSSv3 y Umbrales Aplicados", self.styles['Normal']))
-        elements.append(Paragraph("4. SLA de Remediación Institucional", self.styles['Normal']))
-        elements.append(Paragraph("5. Referencia a Reportes Detallados por Herramienta",
-                                  self.styles['Normal']))
+        elements = [Paragraph("TABLA DE CONTENIDOS", self.styles["CustomHeading2"]),
+                    Spacer(1, 0.15 * inch)]
+        for line in ["1. Veredicto global del Quality Gate y distribución",
+                     "2. Resumen por herramienta",
+                     "3. Umbrales CVSSv3 aplicados",
+                     "4. SLA de remediación institucional",
+                     "5. Reportes detallados por herramienta"]:
+            elements.append(Paragraph(line, self.styles["BodyJustified"]))
         elements.append(PageBreak())
         return elements
 
     def _verdict(self):
         elements = [Paragraph("1. VEREDICTO GLOBAL DEL QUALITY GATE",
-                              self.styles['CustomHeading2']),
-                    Spacer(1, 0.2 * inch)]
+                              self.styles["CustomHeading2"]),
+                    Spacer(1, 0.15 * inch)]
 
-        breached = []
-        for sev, (threshold, _cvss, _sla) in self.THRESHOLDS.items():
-            if self.totals[sev] > threshold:
-                breached.append((sev, self.totals[sev], threshold))
+        breached = [
+            (sev, self.totals[sev], threshold)
+            for sev, (threshold, _c, _s) in self.THRESHOLDS.items()
+            if self.totals[sev] > threshold
+        ]
+        passed = not breached
 
-        if not breached:
-            status = "<font color='#27ae60'><b>APROBADO</b></font>"
+        if passed:
             desc = ("El análisis consolidado no detectó violaciones a los umbrales "
-                    "CVSSv3 institucionales. El repositorio cumple con los estándares "
+                    "CVSSv3 institucionales. El repositorio cumple los estándares "
                     "de seguridad definidos para su fase actual del SSDLC.")
         else:
-            status = "<font color='#c0392b'><b>BLOQUEADO</b></font>"
             desc = ("Se detectaron uno o más umbrales excedidos según la tabla CVSSv3 "
                     "institucional. La remediación es obligatoria antes de continuar "
                     "al siguiente entorno.")
 
-        summary = f"""
-        <b>Estado consolidado:</b> {status}<br/>
-        {desc}<br/><br/>
-        <b>Hallazgos totales acumulados:</b> {self.totals['total']}<br/>
-        <br/>
-        <b>Distribución acumulada por severidad:</b><br/>
-        • <font color='#c0392b'><b>Críticas:</b></font> {self.totals['critical']} hallazgos<br/>
-        • <font color='#e74c3c'><b>Altas:</b></font> {self.totals['high']} hallazgos<br/>
-        • <font color='#f39c12'><b>Medias:</b></font> {self.totals['medium']} hallazgos<br/>
-        • <font color='#f1c40f'><b>Bajas:</b></font> {self.totals['low']} hallazgos<br/>
-        • <font color='#95a5a6'><b>Info:</b></font> {self.totals['info']} hallazgos<br/>
-        """
-        elements.append(Paragraph(summary, self.styles['BodyJustified']))
+        elements.append(Paragraph(
+            f"<b>Estado consolidado:</b> "
+            f"{status_html(passed, label_fail='BLOQUEADO')}<br/>"
+            f"{desc}<br/><br/>"
+            f"<b>Hallazgos totales acumulados:</b> {self.totals['total']}",
+            self.styles["BodyJustified"],
+        ))
+        elements.append(Spacer(1, 0.2 * inch))
+
+        if self.total_institucional > 0:
+            elements.append(Paragraph("Distribución global por severidad",
+                                      self.styles["CustomHeading3"]))
+            elements.append(Spacer(1, 0.08 * inch))
+            elements.append(tabla_distribucion_severidad(
+                self.stats_for_tabla, total=self.total_institucional))
+            elements.append(Spacer(1, 0.15 * inch))
+            elements.append(Paragraph(
+                "Suma de hallazgos de todas las herramientas SSDLC ejecutadas. "
+                "Los hallazgos INFO nativos se agrupan en BAJA para la tabla "
+                "institucional; el desglose completo aparece en la sección de "
+                "umbrales.",
+                self.styles["Caption"],
+            ))
         elements.append(PageBreak())
         return elements
 
     def _per_tool(self):
         elements = [Paragraph("2. RESUMEN POR HERRAMIENTA",
-                              self.styles['CustomHeading2']),
-                    Spacer(1, 0.2 * inch)]
+                              self.styles["CustomHeading2"]),
+                    Spacer(1, 0.15 * inch)]
 
-        header = ["Etapa", "Herramienta", "Crit", "Alt", "Med", "Baj", "Info", "Total", "Estado"]
-        rows = [header]
+        rows = [["Etapa", "Herramienta", "Crít", "Alt", "Med", "Baj", "Info", "Total", "Estado"]]
+        status_map = {"ok": "OK", "skipped": "Skipped", "error": "Error"}
 
-        # Agrupar por stage number para orden visual
         for r in sorted(self.results, key=lambda x: (x["stage"], x["display_name"])):
             counts = r["counts"]
-            status_map = {"ok": "OK", "skipped": "Skipped", "error": "Error"}
             rows.append([
                 str(r["stage"]),
-                r["display_name"][:22],
+                r["display_name"][:24],
                 str(counts["critical"]),
                 str(counts["high"]),
                 str(counts["medium"]),
@@ -603,7 +581,6 @@ class ExecutiveSummaryPDF:
                 status_map.get(r["status"], "—"),
             ])
 
-        # Total row
         rows.append([
             "—", "TOTAL ACUMULADO",
             str(self.totals["critical"]),
@@ -615,84 +592,59 @@ class ExecutiveSummaryPDF:
             "—",
         ])
 
-        col_widths = [0.4 * inch, 1.7 * inch, 0.4 * inch, 0.4 * inch, 0.4 * inch,
-                      0.4 * inch, 0.4 * inch, 0.5 * inch, 0.7 * inch]
-        t = Table(rows, colWidths=col_widths)
-        t.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#2c3e50')),
-            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
-            ('BACKGROUND', (0, -1), (-1, -1), colors.HexColor('#ecf0f1')),
-            ('BOTTOMPADDING', (0, 0), (-1, 0), 10),
-            ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
-            ('FONTSIZE', (0, 0), (-1, -1), 8),
-            ('ROWBACKGROUNDS', (0, 1), (-1, -2), [colors.white, colors.HexColor('#f8f9fa')]),
-        ]))
-        elements.append(t)
+        col_widths = [0.5 * inch, 1.7 * inch, 0.45 * inch, 0.45 * inch, 0.45 * inch,
+                      0.45 * inch, 0.45 * inch, 0.55 * inch, 0.75 * inch]
+        elements.append(styled_secondary_table(
+            rows, col_widths, first_col_align="CENTER",
+        ))
         elements.append(PageBreak())
         return elements
 
     def _thresholds(self):
         elements = [Paragraph("3. UMBRALES CVSSv3 APLICADOS",
-                              self.styles['CustomHeading2']),
-                    Spacer(1, 0.2 * inch)]
-
-        rows = [["Severidad", "CVSSv3", "Umbral Bloqueo", "Hallazgos", "Estado"]]
+                              self.styles["CustomHeading2"]),
+                    Spacer(1, 0.15 * inch)]
+        rows = [["Severidad", "CVSSv3", "Umbral bloqueo", "Hallazgos", "Estado"]]
         for sev, (threshold, cvss, _sla) in self.THRESHOLDS.items():
             count = self.totals[sev]
             rule = "> 0 bloquea" if threshold == 0 else f"> {threshold} bloquea"
-            passed = count <= threshold if threshold > 0 else count == 0
-            status = "OK" if passed else "BLOQUEA"
-            rows.append([sev.capitalize(), cvss, rule, str(count), status])
-
-        t = Table(rows, colWidths=[1.2 * inch, 1.2 * inch, 1.5 * inch,
-                                    1.0 * inch, 1.0 * inch])
-        t.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#2c3e50')),
-            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('BOTTOMPADDING', (0, 0), (-1, 0), 10),
-            ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
-            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f8f9fa')]),
-        ]))
-        elements.append(t)
+            ok = count <= threshold if threshold > 0 else count == 0
+            rows.append([sev.capitalize(), cvss, rule, str(count),
+                         "OK" if ok else "BLOQUEA"])
+        elements.append(styled_secondary_table(
+            rows,
+            [1.2 * inch, 1.2 * inch, 1.6 * inch, 1.0 * inch, 1.0 * inch],
+            first_col_align="CENTER",
+        ))
         elements.append(PageBreak())
         return elements
 
     def _sla(self):
         elements = [Paragraph("4. SLA DE REMEDIACIÓN INSTITUCIONAL",
-                              self.styles['CustomHeading2']),
-                    Spacer(1, 0.2 * inch)]
-        rows = [["Severidad", "CVSSv3", "SLA de Remediación"]]
-        for sev, (_th, cvss, sla) in self.THRESHOLDS.items():
+                              self.styles["CustomHeading2"]),
+                    Spacer(1, 0.15 * inch)]
+        rows = [["Severidad", "CVSSv3", "SLA de remediación"]]
+        for sev, (_t, cvss, sla) in self.THRESHOLDS.items():
             rows.append([sev.capitalize(), cvss, sla])
-        t = Table(rows, colWidths=[1.5 * inch, 1.5 * inch, 2.5 * inch])
-        t.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#2c3e50')),
-            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('BOTTOMPADDING', (0, 0), (-1, 0), 10),
-            ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
-            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f8f9fa')]),
-        ]))
-        elements.append(t)
+        elements.append(styled_secondary_table(
+            rows,
+            [1.5 * inch, 1.5 * inch, 2.5 * inch],
+            first_col_align="LEFT",
+            numeric_cols_center=False,
+        ))
         elements.append(PageBreak())
         return elements
 
     def _references(self):
         elements = [Paragraph("5. REPORTES DETALLADOS POR HERRAMIENTA",
-                              self.styles['CustomHeading2']),
-                    Spacer(1, 0.2 * inch)]
+                              self.styles["CustomHeading2"]),
+                    Spacer(1, 0.15 * inch)]
         elements.append(Paragraph(
             "Cada herramienta cuenta con un reporte PDF individual con el desglose "
             "completo de hallazgos, evidencia de código, referencias OWASP/CWE y "
             "sugerencias de remediación. Los PDFs se encuentran en el ZIP entregable "
             "adjunto a este documento.",
-            self.styles['BodyJustified'],
+            self.styles["BodyJustified"],
         ))
         elements.append(Spacer(1, 0.2 * inch))
 
@@ -701,30 +653,21 @@ class ExecutiveSummaryPDF:
             pdf = r["pdf_path"] or "—"
             status = r["status"].capitalize()
             if r["status"] == "skipped" and r["reason"]:
-                status = f"Skipped ({r['reason'][:30]})"
+                status = f"Skipped ({r['reason'][:32]})"
             rows.append([r["display_name"], pdf, status])
-        t = Table(rows, colWidths=[2.2 * inch, 2.0 * inch, 2.0 * inch])
-        t.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#2c3e50')),
-            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('BOTTOMPADDING', (0, 0), (-1, 0), 10),
-            ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
-            ('FONTSIZE', (0, 0), (-1, -1), 9),
-            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f8f9fa')]),
-        ]))
-        elements.append(t)
+        elements.append(styled_secondary_table(
+            rows,
+            [2.4 * inch, 2.2 * inch, 1.8 * inch],
+            first_col_align="LEFT",
+            numeric_cols_center=False,
+        ))
         return elements
 
     def generate(self):
         doc = SimpleDocTemplate(
-            str(self.output_path),
-            pagesize=letter,
-            topMargin=100, bottomMargin=50, rightMargin=40, leftMargin=40,
-            title='Reporte Ejecutivo SSDLC Consolidado',
+            str(self.output_path), pagesize=letter,
+            title=self.REPORT_TITLE, **DOC_MARGINS,
         )
-
         elements = []
         elements.extend(self._cover())
         elements.extend(self._toc())
@@ -734,7 +677,8 @@ class ExecutiveSummaryPDF:
         elements.extend(self._sla())
         elements.extend(self._references())
 
-        doc.build(elements, onFirstPage=self.draw_header, onLaterPages=self.draw_header)
+        page_cb = self._page_callback()
+        doc.build(elements, onFirstPage=page_cb, onLaterPages=page_cb)
         print(f"✓ PDF ejecutivo consolidado generado: {self.output_path}")
 
 

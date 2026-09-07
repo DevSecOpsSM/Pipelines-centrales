@@ -1,391 +1,280 @@
 #!/usr/bin/env python3
 """
-Script para convertir reportes JSON de OWASP Dependency Check a PDF estructurado institucional
+Generador PDF institucional para reportes JSON de OWASP Dependency-Check.
 Uso: python3 owasp_to_pdf_report.py <json_report> <output_pdf> [logo_path]
+
+Refactor: usa el branding común Template_SM_Ciber (branding_sm.py).
 """
 
-import json
-import sys
-import os
 import html
-from datetime import datetime
+import json
+import os
+import sys
 from collections import defaultdict
+from datetime import datetime
+
 from reportlab.lib.pagesizes import letter
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.units import inch, cm
-from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY
-from reportlab.platypus import (
-    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
+from reportlab.lib.units import inch
+from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer
+
+from branding_sm import (
+    DOC_MARGINS,
+    build_styles,
+    page_decorations_factory,
+    status_html,
+    styled_secondary_table,
+    tabla_distribucion_severidad,
 )
-from reportlab.lib import colors
+
 
 class OWASPReportGenerator:
-    
     SEV_CRITICA = "CRÍTICA"
     SEV_ALTA = "ALTA"
     SEV_MEDIA = "MEDIA"
     SEV_BAJA = "BAJA"
 
-    def __init__(self, json_report_path, pdf_output_path, logo_filename="Logo_Simon_Ultimo.png"):
+    REPORT_TITLE = "Reporte OWASP Dependency-Check · SCA"
+    CODIGO = "DevSecOps-OWASP"
+
+    def __init__(self, json_report_path, pdf_output_path, logo_filename=None):
         self.json_report_path = json_report_path
         self.pdf_output_path = pdf_output_path
-        
+
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        self.logo_path = os.path.join(script_dir, logo_filename)
-        
-        self.test_type = "DevSecOps-OWASP"
+        if logo_filename:
+            candidate = os.path.join(script_dir, logo_filename)
+            self.logo_path = candidate if os.path.exists(candidate) else logo_filename
+        else:
+            self.logo_path = None
+
         self.data = None
         self.dependencies = []
         self.stats = {}
-        
-        self.styles = getSampleStyleSheet()
-        self._setup_custom_styles()
-        
-    def _setup_custom_styles(self):
-        self.styles.add(ParagraphStyle(
-            name='CustomTitle',
-            parent=self.styles['Heading1'],
-            fontSize=24,
-            textColor=colors.HexColor('#1a1a1a'),
-            spaceAfter=30,
-            alignment=TA_CENTER,
-            fontName='Helvetica-Bold'
-        ))
-        
-        self.styles.add(ParagraphStyle(
-            name='CustomHeading2',
-            parent=self.styles['Heading2'],
-            fontSize=14,
-            textColor=colors.HexColor('#2c3e50'),
-            spaceAfter=12,
-            spaceBefore=12,
-            fontName='Helvetica-Bold',
-            borderColor=colors.HexColor('#00e5bd'),
-            borderWidth=2,
-            borderPadding=8,
-            borderRadius=3
-        ))
-        
-        self.styles.add(ParagraphStyle(
-            name='BodyJustified',
-            parent=self.styles['BodyText'],
-            alignment=TA_JUSTIFY,
-            fontSize=10,
-            leading=12,
-            textColor=colors.HexColor('#2c3e50')
-        ))
+        self.styles = build_styles()
 
-    def draw_header(self, canvas, doc):
-        canvas.saveState()
-        width, height = letter
-        
-        if os.path.exists(self.logo_path):
-            canvas.drawImage(self.logo_path, 40, height - 70, width=140, height=40, preserveAspectRatio=True, mask='auto')
-        else:
-            print(f"⚠️ ADVERTENCIA: No se encontró el logo en la ruta: {self.logo_path}")
-            
-        data = [
-            ['Código:', self.test_type],
-            ['Vigente desde:', datetime.now().strftime('%d/%m/%Y')],
-            ['Clasificación:', 'Confidencial']
-        ]
-        
-        t = Table(data, colWidths=[80, 100])
-        t.setStyle(TableStyle([
-            ('FONTNAME', (0,0), (0,-1), 'Helvetica-Bold'),
-            ('FONTNAME', (1,0), (1,-1), 'Helvetica'),
-            ('SIZE', (0,0), (-1,-1), 9),
-            ('TEXTCOLOR', (0,0), (-1,-1), colors.HexColor('#333333')),
-            ('ALIGN', (0,0), (-1,-1), 'LEFT'),
-            ('BOTTOMPADDING', (0,0), (-1,-1), 2),
-            ('TOPPADDING', (0,0), (-1,-1), 2),
-        ]))
-        
-        t.wrapOn(canvas, width, height)
-        t.drawOn(canvas, width - 220, height - 65)
-        
-        canvas.setStrokeColor(colors.HexColor('#00e5bd'))
-        canvas.setLineWidth(1.5)
-        canvas.line(40, height - 80, width - 40, height - 80)
-        
-        canvas.setFont('Helvetica', 8)
-        canvas.setFillColor(colors.gray)
-        canvas.drawCentredString(width / 2.0, 30, f"Página {canvas.getPageNumber()}")
-        
-        canvas.restoreState()
+    def _page_callback(self):
+        return page_decorations_factory(
+            report_title=self.REPORT_TITLE,
+            codigo=self.CODIGO,
+            logo_path=self.logo_path,
+        )
 
     def load_json_report(self):
         try:
-            with open(self.json_report_path, 'r', encoding='utf-8') as f:
+            with open(self.json_report_path, "r", encoding="utf-8") as f:
                 self.data = json.load(f)
-            self.dependencies = self.data.get('dependencies', [])
-            print(f"✓ Reporte cargado: {len(self.dependencies)} dependencias analizadas")
+            self.dependencies = self.data.get("dependencies", [])
+            print(f"✓ Reporte OWASP cargado: {len(self.dependencies)} dependencias")
         except Exception as e:
             print(f"✗ Error al cargar JSON OWASP: {str(e)}")
             sys.exit(1)
 
-    def calculate_statistics(self):
-        total_vulns = 0
-        critical_count = 0
-        high_count = 0
-        medium_count = 0
-        low_count = 0
-        vuln_by_cvss = defaultdict(int)
-        
-        for dep in self.dependencies:
-            vulns = dep.get('vulnerabilities', [])
-            for vuln in vulns:
-                total_vulns += 1
-                cvss = self._get_vuln_cvss(vuln)
-                
-                if cvss >= 9.0: critical_count += 1
-                elif cvss >= 7.0: high_count += 1
-                elif cvss >= 4.0: medium_count += 1
-                elif cvss >= 0.1: low_count += 1
-                
-                vuln_by_cvss[int(cvss)] += 1
-        
-        self.stats = {
-            'total_dependencies': len(self.dependencies),
-            'vulnerable_dependencies': len([d for d in self.dependencies if d.get('vulnerabilities')]),
-            'total_vulnerabilities': total_vulns,
-            'critical': critical_count,
-            'high': high_count,
-            'medium': medium_count,
-            'low': low_count,
-            'vuln_by_cvss': dict(sorted(vuln_by_cvss.items(), reverse=True))
-        }
+    def _get_vuln_cvss(self, vuln):
+        if "cvssv3" in vuln:
+            return vuln["cvssv3"].get("baseScore", 0)
+        if "cvssv2" in vuln:
+            return vuln["cvssv2"].get("score", 0)
+        return 0
 
     def get_cvss_severity(self, cvss_score):
         try:
             score = float(cvss_score)
-            if score >= 9.0: return self.SEV_CRITICA
-            elif score >= 7.0: return self.SEV_ALTA
-            elif score >= 4.0: return self.SEV_MEDIA
-            else: return self.SEV_BAJA
         except (ValueError, TypeError):
-            return "DESCONOCIDA"
+            return self.SEV_BAJA
+        if score >= 9.0:
+            return self.SEV_CRITICA
+        if score >= 7.0:
+            return self.SEV_ALTA
+        if score >= 4.0:
+            return self.SEV_MEDIA
+        return self.SEV_BAJA
+
+    def calculate_statistics(self):
+        critical = high = medium = low = 0
+        total_vulns = 0
+        for dep in self.dependencies:
+            for v in dep.get("vulnerabilities", []) or []:
+                total_vulns += 1
+                sev = self.get_cvss_severity(self._get_vuln_cvss(v))
+                if sev == self.SEV_CRITICA:
+                    critical += 1
+                elif sev == self.SEV_ALTA:
+                    high += 1
+                elif sev == self.SEV_MEDIA:
+                    medium += 1
+                else:
+                    low += 1
+
+        self.stats = {
+            "total_dependencies": len(self.dependencies),
+            "vulnerable_dependencies": sum(
+                1 for d in self.dependencies if d.get("vulnerabilities")
+            ),
+            "total_vulnerabilities": total_vulns,
+            "critical": critical,
+            "high": high,
+            "medium": medium,
+            "low": low,
+        }
 
     def create_executive_summary(self):
-        elements = []
-        elements.append(Paragraph("RESUMEN EJECUTIVO", self.styles['CustomHeading2']))
-        elements.append(Spacer(1, 0.2*inch))
-        
-        has_risk = (
-            self.stats['critical'] > 0 or 
-            self.stats['high'] > 0 or 
-            self.stats['medium'] > 0 or 
-            self.stats['low'] > 0
-        )
-        
-        if not has_risk:
-            status_html = "<font color='#27ae60'><b>APROBADO</b></font>"
-            status_desc = "El escaneo de dependencias (SCA) concluyó con éxito. No se detectaron librerías de terceros con vulnerabilidades conocidas (CVEs) de ningún nivel, asegurando la integridad de la cadena de suministro."
-        else:
-            status_html = "<font color='#c0392b'><b>FALLIDO</b></font>"
-            status_desc = "Se han detectado dependencias con vulnerabilidades (CVEs) documentadas. Es crítico revisar y actualizar estas librerías a versiones parchadas, ya que introducen riesgos a la aplicación."
+        elements = [Paragraph("RESUMEN EJECUTIVO", self.styles["CustomHeading2"]),
+                    Spacer(1, 0.15 * inch)]
+        total = self.stats["total_vulnerabilities"]
+        passed = total == 0
 
-        summary_text = f"""
-        <b>Estado del Análisis:</b> {status_html}<br/>
-        {status_desc}<br/><br/>
-        <b>Total de Dependencias Escaneadas:</b> {self.stats['total_dependencies']}<br/>
-        <b>Dependencias Vulnerables:</b> {self.stats['vulnerable_dependencies']}<br/>
-        <b>Total de Vulnerabilidades Encontradas:</b> {self.stats['total_vulnerabilities']}<br/>
-        <br/>
-        <b>Distribución por Severidad (CVSS):</b><br/>
-        • <font color='#c0392b'><b>Críticas (≥9.0):</b></font> {self.stats['critical']} vulnerabilidades<br/>
-        • <font color='#e74c3c'><b>Altas (≥7.0):</b></font> {self.stats['high']} vulnerabilidades<br/>
-        • <font color='#f39c12'><b>Medias (≥4.0):</b></font> {self.stats['medium']} vulnerabilidades<br/>
-        • <font color='#f1c40f'><b>Bajas (&lt;4.0):</b></font> {self.stats['low']} vulnerabilidades<br/>
-        """
-        elements.append(Paragraph(summary_text, self.styles['BodyJustified']))
-        
+        if passed:
+            desc = ("El escaneo SCA de OWASP Dependency-Check no detectó librerías "
+                    "de terceros con vulnerabilidades conocidas (CVEs), asegurando "
+                    "la integridad de la cadena de suministro.")
+        else:
+            desc = ("Se detectaron dependencias con CVEs documentadas. Es crítico "
+                    "revisar y actualizar estas librerías a versiones parchadas.")
+
+        summary = (
+            f"<b>Estado del análisis:</b> {status_html(passed)}<br/>"
+            f"{desc}<br/><br/>"
+            f"<b>Total de dependencias escaneadas:</b> {self.stats['total_dependencies']}<br/>"
+            f"<b>Dependencias vulnerables:</b> {self.stats['vulnerable_dependencies']}<br/>"
+            f"<b>Total de vulnerabilidades:</b> {total}"
+        )
+        elements.append(Paragraph(summary, self.styles["BodyJustified"]))
+        elements.append(Spacer(1, 0.2 * inch))
+
+        if total > 0:
+            elements.append(Paragraph("Distribución por severidad (CVSS)",
+                                      self.styles["CustomHeading3"]))
+            elements.append(Spacer(1, 0.08 * inch))
+            elements.append(tabla_distribucion_severidad(self.stats, total=total))
+            elements.append(Spacer(1, 0.15 * inch))
+            elements.append(Paragraph(
+                "Umbrales CVSSv3: CRÍTICA ≥ 9.0 · ALTA ≥ 7.0 · MEDIA ≥ 4.0 · BAJA < 4.0. "
+                "Los porcentajes se calculan sobre el total de vulnerabilidades.",
+                self.styles["Caption"],
+            ))
         return elements
 
     def create_statistics_section(self):
-        elements = []
-        elements.append(PageBreak())
-        elements.append(Paragraph("ESTADÍSTICAS DETALLADAS", self.styles['CustomHeading2']))
-        elements.append(Spacer(1, 0.2*inch))
-        
-        severity_data = [['Severidad', 'Cantidad', 'Porcentaje']]
-        for severity, key in [(self.SEV_CRITICA, 'critical'), (self.SEV_ALTA, 'high'), (self.SEV_MEDIA, 'medium'), (self.SEV_BAJA, 'low')]:
-            count = self.stats[key]
-            percentage = (count / self.stats['total_vulnerabilities'] * 100) if self.stats['total_vulnerabilities'] > 0 else 0
-            severity_data.append([severity, str(count), f'{percentage:.1f}%'])
-        
-        severity_table = Table(severity_data, colWidths=[2*inch, 1.5*inch, 1.5*inch])
-        severity_table.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#2c3e50')),
-            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-            ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
-            ('GRID', (0, 0), (-1, -1), 1, colors.black),
-            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f8f9fa')])
-        ]))
-        
-        elements.append(severity_table)
-        elements.append(Spacer(1, 0.3*inch))
-        
-        elements.append(Paragraph("DEPENDENCIAS MÁS VULNERABLES", self.styles['Heading3']))
-        elements.append(Spacer(1, 0.1*inch))
-        
+        if self.stats["total_vulnerabilities"] == 0:
+            return []
+        elements = [PageBreak(),
+                    Paragraph("DEPENDENCIAS MÁS VULNERABLES",
+                              self.styles["CustomHeading2"]),
+                    Spacer(1, 0.15 * inch)]
         vuln_by_lib = []
         for dep in self.dependencies:
-            if dep.get('vulnerabilities'):
+            if dep.get("vulnerabilities"):
                 vuln_by_lib.append({
-                    'name': dep.get('fileName', 'Unknown'),
-                    'count': len(dep.get('vulnerabilities', []))
+                    "name": dep.get("fileName", "Unknown"),
+                    "count": len(dep.get("vulnerabilities", [])),
                 })
-        
-        vuln_by_lib.sort(key=lambda x: x['count'], reverse=True)
-        top_vulns = vuln_by_lib[:15]
-        
-        if top_vulns:
-            vuln_data = [['Librería', 'Vulnerabilidades']]
-            for item in top_vulns:
-                vuln_data.append([item['name'][:50], str(item['count'])])
-            
-            vuln_table = Table(vuln_data, colWidths=[3.5*inch, 1.5*inch])
-            vuln_table.setStyle(TableStyle([
-                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#2c3e50')),
-                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-                ('ALIGN', (1, 0), (1, -1), 'CENTER'),
-                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-                ('GRID', (0, 0), (-1, -1), 1, colors.black),
-                ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f8f9fa')])
-            ]))
-            elements.append(vuln_table)
-        
+        vuln_by_lib.sort(key=lambda x: x["count"], reverse=True)
+        top = vuln_by_lib[:15]
+        if top:
+            data = [["Librería", "Vulnerabilidades"]]
+            for item in top:
+                data.append([item["name"][:55], str(item["count"])])
+            elements.append(styled_secondary_table(data, [4.0 * inch, 1.5 * inch]))
         return elements
 
-    def _get_vuln_cvss(self, vuln):
-        """Extrae el score CVSS de una vulnerabilidad."""
-        if 'cvssv3' in vuln: return vuln['cvssv3'].get('baseScore', 0)
-        if 'cvssv2' in vuln: return vuln['cvssv2'].get('score', 0)
-        return 0
-
-    def _extract_vulns_by_severity(self):
-        """Agrupa las dependencias por severidad."""
-        vulns_by_severity = {self.SEV_CRITICA: [], self.SEV_ALTA: [], self.SEV_MEDIA: [], self.SEV_BAJA: []}
-        for dep in self.dependencies:
-            for vuln in dep.get('vulnerabilities', []):
-                cvss = self._get_vuln_cvss(vuln)
-                severity = self.get_cvss_severity(cvss)
-                vuln['library'] = dep.get('fileName', 'Unknown')
-                vulns_by_severity[severity].append(vuln)
-        return vulns_by_severity
-
     def _format_references(self, vuln):
-        """Formatea las referencias (URLs) a HTML seguro."""
-        if not vuln.get('references'):
+        if not vuln.get("references"):
             return ""
         refs = []
-        for r in vuln.get('references', [])[:2]:
+        for r in vuln.get("references", [])[:2]:
             if isinstance(r, dict):
-                if 'name' in r: refs.append(html.escape(str(r['name'])))
-                elif 'url' in r: refs.append(html.escape(str(r['url'])))
+                if "name" in r:
+                    refs.append(html.escape(str(r["name"])))
+                elif "url" in r:
+                    refs.append(html.escape(str(r["url"])))
             elif isinstance(r, str):
                 refs.append(html.escape(str(r)))
-        if refs:
-            return f"<b>Referencias:</b> {', '.join(refs)}<br/>"
-        return ""
+        return f"<br/><b>Referencias:</b> {', '.join(refs)}" if refs else ""
+
+    def _extract_vulns_by_severity(self):
+        by_sev = {self.SEV_CRITICA: [], self.SEV_ALTA: [], self.SEV_MEDIA: [], self.SEV_BAJA: []}
+        for dep in self.dependencies:
+            for v in dep.get("vulnerabilities", []) or []:
+                v["library"] = dep.get("fileName", "Unknown")
+                by_sev[self.get_cvss_severity(self._get_vuln_cvss(v))].append(v)
+        return by_sev
 
     def _create_severity_block(self, severity, vulns):
-        """Genera los párrafos PDF para un bloque específico de severidad."""
-        elements = []
-        elements.append(PageBreak())
-        elements.append(Paragraph(f"VULNERABILIDADES {severity} ({len(vulns)})", self.styles['CustomHeading2']))
-        elements.append(Spacer(1, 0.2*inch))
-        
-        for idx, vuln in enumerate(vulns, 1):
-            if idx > 1: elements.append(Spacer(1, 0.15*inch))
-            
-            cvss = self._get_vuln_cvss(vuln)
-            vuln_name = html.escape(str(vuln.get('name', 'Sin nombre')))
-            lib_name = html.escape(str(vuln.get('library', 'N/A')))
-            desc = html.escape(str(vuln.get('description') or 'Sin descripción'))
-            
-            elements.append(Paragraph(f"<b>{idx}. {vuln_name[:70]}</b>", self.styles['Heading3']))
-            
-            details = f"""
-            <b>Librería Afectada:</b> {lib_name}<br/>
-            <b>CVE:</b> {vuln_name}<br/>
-            <b>CVSS Score:</b> {cvss}<br/>
-            <b>Descripción:</b> {desc[:200]}...<br/>
-            """
-            details += self._format_references(vuln)
-            
-            elements.append(Paragraph(details, self.styles['BodyText']))
-        
+        elements = [PageBreak(),
+                    Paragraph(f"VULNERABILIDADES · {severity} ({len(vulns)})",
+                              self.styles["CustomHeading2"]),
+                    Spacer(1, 0.15 * inch)]
+        for idx, v in enumerate(vulns, 1):
+            if idx > 1:
+                elements.append(Spacer(1, 0.1 * inch))
+            cvss = self._get_vuln_cvss(v)
+            vname = html.escape(str(v.get("name", "Sin nombre")))
+            lib = html.escape(str(v.get("library", "N/A")))
+            desc = html.escape(str(v.get("description") or "Sin descripción"))
+            elements.append(Paragraph(f"<b>{idx}. {vname[:80]}</b>",
+                                      self.styles["CustomHeading3"]))
+            details = (
+                f"<b>Librería:</b> {lib}<br/>"
+                f"<b>CVE:</b> {vname}<br/>"
+                f"<b>CVSS score:</b> {cvss}<br/>"
+                f"<b>Descripción:</b> {desc[:250]}"
+                f"{self._format_references(v)}"
+            )
+            elements.append(Paragraph(details, self.styles["BodyJustified"]))
         return elements
 
     def create_findings_section(self):
-        """Función principal refactorizada para armar el PDF de hallazgos."""
         elements = []
-        vulns_by_severity = self._extract_vulns_by_severity()
-        
-        for severity in [self.SEV_CRITICA, self.SEV_ALTA, self.SEV_MEDIA]:
-            vulns = vulns_by_severity[severity]
+        by_sev = self._extract_vulns_by_severity()
+        for severity in [self.SEV_CRITICA, self.SEV_ALTA, self.SEV_MEDIA, self.SEV_BAJA]:
+            vulns = by_sev[severity]
             if vulns:
                 elements.extend(self._create_severity_block(severity, vulns))
-                
         return elements
 
     def generate_pdf(self):
         try:
             self.load_json_report()
             self.calculate_statistics()
-            
             doc = SimpleDocTemplate(
-                self.pdf_output_path,
-                pagesize=letter,
-                topMargin=100,
-                bottomMargin=50,
-                rightMargin=40,
-                leftMargin=40,
-                title='Reporte OWASP Dependency Check'
+                self.pdf_output_path, pagesize=letter,
+                title=self.REPORT_TITLE, **DOC_MARGINS,
             )
-            
-            elements = []
-            
-            elements.append(Spacer(1, 1*inch))
-            elements.append(Paragraph("REPORTE DE ANÁLISIS DE DEPENDENCIAS", self.styles['CustomTitle']))
-            elements.append(Paragraph("OWASP Dependency Check - SCA", self.styles['Heading2']))
-            elements.append(Spacer(1, 0.5*inch))
-            
-            elements.append(Paragraph("TABLA DE CONTENIDOS", self.styles['CustomHeading2']))
-            elements.append(Spacer(1, 0.2*inch))
-            elements.append(Paragraph("1. Resumen Ejecutivo", self.styles['Normal']))
-            elements.append(Paragraph("2. Estadísticas Detalladas", self.styles['Normal']))
-            elements.append(Paragraph("3. Desglose de Hallazgos por Severidad", self.styles['Normal']))
-            
+            elements = [Spacer(1, 1.4 * inch),
+                        Paragraph("REPORTE DE ANÁLISIS DE DEPENDENCIAS",
+                                  self.styles["CustomTitle"]),
+                        Paragraph("OWASP Dependency-Check · SCA",
+                                  self.styles["CustomSubtitle"]),
+                        Spacer(1, 0.3 * inch),
+                        Paragraph(f"Generado el {datetime.now().strftime('%d/%m/%Y %H:%M')}",
+                                  self.styles["Caption"]),
+                        Spacer(1, 0.4 * inch),
+                        Paragraph("TABLA DE CONTENIDOS", self.styles["CustomHeading2"]),
+                        Spacer(1, 0.15 * inch)]
+            for line in ["1. Resumen ejecutivo y distribución por severidad",
+                         "2. Dependencias más vulnerables",
+                         "3. Desglose de vulnerabilidades por severidad"]:
+                elements.append(Paragraph(line, self.styles["BodyJustified"]))
             elements.append(PageBreak())
-            
             elements.extend(self.create_executive_summary())
             elements.extend(self.create_statistics_section())
             elements.extend(self.create_findings_section())
-            
-            doc.build(elements, onFirstPage=self.draw_header, onLaterPages=self.draw_header)
+
+            page_cb = self._page_callback()
+            doc.build(elements, onFirstPage=page_cb, onLaterPages=page_cb)
             print(f"✓ PDF OWASP generado exitosamente: {self.pdf_output_path}")
-            
         except Exception as e:
-            print(f"✗ Error al generar PDF: {str(e)}")
+            print(f"✗ Error al generar PDF OWASP: {str(e)}")
             sys.exit(1)
+
 
 def main():
     if len(sys.argv) < 3:
+        print("Uso: python3 owasp_to_pdf_report.py <json_report> <output_pdf> [logo_path]")
         sys.exit(1)
-    
-    json_report = sys.argv[1]
-    output_pdf = sys.argv[2]
-    logo = sys.argv[3] if len(sys.argv) > 3 else "Logo_Simon_Ultimo.png"
-    
-    generator = OWASPReportGenerator(json_report, output_pdf, logo)
-    generator.generate_pdf()
+    logo = sys.argv[3] if len(sys.argv) > 3 else None
+    OWASPReportGenerator(sys.argv[1], sys.argv[2], logo).generate_pdf()
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()
