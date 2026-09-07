@@ -47,3 +47,10 @@ desktop.ini
 # Docs de referencia interna (Confidencial — no versionar)
 docs/Reporte_*.docx
 docs/*_interno.docx
+
+# Dumps de escaneos reales usados para probar plantillas localmente
+docs/*-raw*.json
+docs/checkov-raw*.json
+docs/trivy-raw*.json
+docs/semgrep-raw*.json
+docs/gitleaks-raw*.json

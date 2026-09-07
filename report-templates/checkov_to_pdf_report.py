@@ -104,12 +104,19 @@ class CheckovReportGenerator:
             sys.exit(1)
 
     def _extract_severity(self, check):
-        """Normaliza la severidad reportada por Checkov."""
+        """
+        Normaliza la severidad reportada por Checkov.
+
+        Convención del equipo (ver sec-iac-terraform.yml consolidator):
+        cuando Checkov open-source no trae `severity` (llega None), el
+        hallazgo se clasifica como ALTA — la severidad la asigna Bridgecrew
+        Prisma Cloud, no disponible en el pipeline gratuito.
+        """
         sev = check.get("severity")
         if isinstance(sev, dict):
-            sev = sev.get("value", "MEDIUM")
-        elif not isinstance(sev, str):
-            sev = "MEDIUM"
+            sev = sev.get("value") or ""
+        if not isinstance(sev, str) or not sev.strip():
+            return self.SEV_ALTA  # fallback consistente con el consolidator
 
         sev = sev.upper()
         if "CRIT" in sev:
@@ -120,11 +127,12 @@ class CheckovReportGenerator:
             return self.SEV_MEDIA
         if "LOW" in sev:
             return self.SEV_BAJA
-        return self.SEV_MEDIA
+        return self.SEV_ALTA
 
     def calculate_statistics(self):
         total_passed = 0
         total_failed = 0
+        sin_severity_nativa = 0
         frameworks_found = set()
 
         sev_counts = {
@@ -146,6 +154,11 @@ class CheckovReportGenerator:
 
             for check in failed_list:
                 check["framework"] = framework
+                raw_sev = check.get("severity")
+                if isinstance(raw_sev, dict):
+                    raw_sev = raw_sev.get("value") or ""
+                if not isinstance(raw_sev, str) or not raw_sev.strip():
+                    sin_severity_nativa += 1
                 severity = self._extract_severity(check)
                 sev_counts[severity] += 1
                 self.failed_checks.append(check)
@@ -160,6 +173,7 @@ class CheckovReportGenerator:
             "high": sev_counts[self.SEV_ALTA],
             "medium": sev_counts[self.SEV_MEDIA],
             "low": sev_counts[self.SEV_BAJA],
+            "sin_severity_nativa": sin_severity_nativa,
         }
 
     # ------------------------------------------------------------------
@@ -209,13 +223,20 @@ class CheckovReportGenerator:
             tabla_distribucion_severidad(self.stats, total=self.stats["total_failed"])
         )
         elements.append(Spacer(1, 0.15 * inch))
-        elements.append(
-            Paragraph(
-                "Los porcentajes se calculan sobre el total de hallazgos "
-                "fallidos. Solo se listan severidades con conteo mayor a cero.",
-                self.styles["Caption"],
-            )
+
+        caption_text = (
+            "Los porcentajes se calculan sobre el total de hallazgos fallidos. "
+            "Solo se listan severidades con conteo mayor a cero."
         )
+        sin_sev = self.stats.get("sin_severity_nativa", 0)
+        if sin_sev > 0:
+            caption_text += (
+                f"<br/><b>Nota:</b> {sin_sev} de {self.stats['total_failed']} "
+                "hallazgos no traen severidad nativa (Checkov open-source no la "
+                "expone; solo Bridgecrew/Prisma Cloud). Por convención del "
+                "equipo se clasifican como <b>ALTA</b>."
+            )
+        elements.append(Paragraph(caption_text, self.styles["Caption"]))
 
         return elements
 
