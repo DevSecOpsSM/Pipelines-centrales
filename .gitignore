@@ -43,3 +43,7 @@ desktop.ini
 *.tmp
 *.temp
 *.bak
+
+# Docs de referencia interna (Confidencial — no versionar)
+docs/Reporte_*.docx
+docs/*_interno.docx
