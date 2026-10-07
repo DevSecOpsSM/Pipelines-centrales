@@ -1,0 +1,31 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# Ejemplo de .security/authz.yml — Autorización por middleware (.NET)
+#
+# Copiar a .security/authz.yml en la raíz del repo consumidor SOLO si la API
+# usa un middleware propio secure-by-default (protege todo salvo los endpoints
+# marcados [AllowAnonymous]).
+#
+# El pipeline (sec-sast.yml) VERIFICA que el middleware está registrado con
+# app.UseMiddleware<Nombre>() o app.UseMiddleware(typeof(Nombre)) ANTES de
+# MapControllers()/MapControllerRoute()/MapDefaultControllerRoute()/
+# UseEndpoints(), en el mismo bloque. Si no lo verifica, los hallazgos de
+# autorización cuentan normal y el job muestra un ::warning.
+#
+# Esquema completo y límites: README › Semgrep.
+# Este archivo es una decisión de seguridad: todo cambio pasa por PR con
+# revisión de Ciberseguridad.
+# ═══════════════════════════════════════════════════════════════════════════
+
+version: 1
+
+middleware:
+  - name: AteneaIdentityMiddleware
+    justification: >-
+      Secure-by-default: el middleware valida la identidad en todas las
+      rutas y solo omite los endpoints marcados [AllowAnonymous].
+      Revisado por Ciberseguridad (análisis Atenea).
+    # scope es opcional. Por defecto cubre solo el proyecto (.csproj) donde
+    # se verificó el registro. Usarlo solo si los controllers viven en otro
+    # proyecto (p. ej. una class library referenciada por la API).
+    # scope:
+    #   - src/Atenea.Controllers
