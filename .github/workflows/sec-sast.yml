@@ -238,7 +238,8 @@ jobs:
                     "error":        "ERROR — los hallazgos cuentan normal",
                 }.get(authz_status, authz_status)
                 regs = "".join(
-                    f'<li><code>{html.escape(g.get("middleware", ""))}</code> en <span class="file-path">{html.escape(g.get("path", ""))}:{g.get("line", "?")}</span></li>'
+                    f'<li><code>{html.escape(g.get("middleware", ""))}</code> en <span class="file-path">{html.escape(g.get("path", ""))}:{g.get("line", "?")}</span>'
+                    f' <span style="color:#B0B0B0">(vía {html.escape(g.get("via", "UseMiddleware"))})</span></li>'
                     for g in authz.get("registrations", [])
                 ) or "<li>Ningún registro verificado</li>"
                 cov_rows = "".join(

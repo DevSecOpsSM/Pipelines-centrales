@@ -70,6 +70,34 @@ regexes = [
 
 
 # ───────────────────────────────────────────────────────────────────────────
+# FP-01b · GUID como clave de configuración en scripts SQL
+#
+# Falso positivo: el mismo caso de FP-01 escrito en SQL, sobre la columna
+# `key` de la tabla de configuración:  WHERE key = '<guid>'.
+# Origen: Atenea, scripts/add-prorroga-email-config.sql (tabla
+# "TCK".configurations, plantilla de email de prórroga). Confirmado en triage.
+#
+# Por qué es seguro:
+#   - Solo `generic-api-key`, y condition = "AND": tienen que cumplirse a la
+#     vez la ruta (.sql) y el regex sobre el match completo.
+#   - El nombre debe ser exactamente `key` (con o sin comillas dobles de
+#     identificador SQL). api_key, secret_key, access_key… siguen alertando.
+#   - Fuera de .sql (p. ej. JS `key: '<uuid>'`) sigue alertando.
+# ───────────────────────────────────────────────────────────────────────────
+[[allowlists]]
+description = "FP-01b: GUID como clave de configuración en SQL (key = '<guid>')"
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "match"
+paths = [
+  '''(?i)\.sql$''',
+]
+regexes = [
+  '''(?i)^"?key"?\s*=\s*'[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}'?\s*;?$''',
+]
+
+
+# ───────────────────────────────────────────────────────────────────────────
 # FP-02 · JWT dentro de archivos de log versionados
 #
 # Falso positivo: archivos de log commiteados por error (p. ej. rolling files

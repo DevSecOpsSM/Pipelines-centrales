@@ -158,6 +158,7 @@ Excepciones centrales vigentes ([config/gitleaks.toml](config/gitleaks.toml)):
 | ID | Regla | Falso positivo | Sigue alertando |
 |----|-------|----------------|-----------------|
 | FP-01 | `generic-api-key` | `Key` / `ConfigKey` / `ConfigurationKey` `= "<GUID>"`: clave de registro en tablas de configuración .NET | `ApiKey`, `SecretKey`, `x.Key`… `= "<GUID>"` (hay API keys reales con formato GUID) |
+| FP-01b | `generic-api-key` | Solo en `.sql`: `key = '<GUID>'` (columna `key` de la tabla de configuración en scripts de datos) | `api_key`, `secret_key`… en SQL; `key = '<uuid>'` fuera de `.sql` |
 | FP-02 | `jwt` | JWT en logs versionados (`log20240115.txt`, `logs/*.txt`, `*.log`) | Cualquier otro secreto dentro de un log (AWS keys, connection strings…) |
 
 #### Política de allowlist: toda excepción requiere justificación
@@ -240,8 +241,9 @@ lo **verifica** antes de aceptarlo: una declaración sin verificación no tiene 
    [examples/security-authz.yml](examples/security-authz.yml)). Llega por PR,
    así que queda revisado y auditado.
 2. `sec-sast.yml` genera una regla Semgrep con el nombre declarado y comprueba
-   que el middleware está registrado con `app.UseMiddleware<X>()` o
-   `app.UseMiddleware(typeof(X))` **antes** de `MapControllers()` /
+   que el middleware está registrado con `app.UseMiddleware<X>()`,
+   `app.UseMiddleware(typeof(X))` o un método de extensión del mismo proyecto
+   que los llame (`app.AddIdentityMiddleware()`) **antes** de `MapControllers()` /
    `MapControllerRoute()` / `MapDefaultControllerRoute()` / `UseEndpoints()`,
    **en el mismo bloque**. Un registro dentro de un `if` no verifica.
 3. Si verifica, los hallazgos `missing-or-broken-authorization` del **mismo
@@ -278,9 +280,11 @@ reporte HTML):
 1. que el middleware **aplique correctamente** la autorización (su lógica),
 2. exclusiones por path (`UseWhen`, listas de rutas públicas) sin
    `[AllowAnonymous]` explícito,
-3. registro mediante métodos de extensión propios (`app.UseAteneaIdentity()`).
-   Ese caso no verifica (fail-closed); se puede ampliar el script si el patrón
-   se repite entre repos,
+3. métodos de extensión definidos en **otro** proyecto (p. ej. una librería
+   compartida). Sí se aceptan las extensiones del mismo proyecto
+   (`app.AddIdentityMiddleware()` → `MiddlewareRegistration.cs`, el patrón de
+   Atenea), siempre que su cuerpo llame a `UseMiddleware<X>()` como sentencia
+   directa, sin `if`/`else`/`switch`/bucles/lambdas,
 4. que cada `[AllowAnonymous]` del inventario esté justificado.
 
 > Si los repos .NET de la organización resultan usar el mismo middleware, el
