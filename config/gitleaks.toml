@@ -1,0 +1,102 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# config/gitleaks.toml — Configuración central de Gitleaks (pipelines-centrales)
+#
+# Usado por .github/workflows/sec-secrets.yml en TODOS los repos consumidores.
+#
+# Composición (scripts/gitleaks_compose_config.py):
+#   reglas por defecto de Gitleaks
+#   + .gitleaks.toml del repo consumidor, si existe (solo puede AÑADIR reglas
+#     y excepciones; no puede desactivar reglas ni quitar estas allowlists)
+#   + las [[allowlists]] de este archivo, siempre.
+# Solo se propagan las [[allowlists]] de este archivo; añadir aquí [[rules]]
+# no tendría efecto en repos con .gitleaks.toml propio.
+#
+# CODEOWNERS: cualquier cambio requiere revisión de Ciberseguridad.
+#
+# Requiere Gitleaks >= 8.25 (bloques [[allowlists]] con targetRules).
+# La versión de la imagen está fijada en sec-secrets.yml.
+#
+# ─── Política de allowlist ────────────────────────────────────────────────
+# CONSERVADORA: es peor silenciar un secreto real que tolerar un falso positivo.
+#   - Cada allowlist se limita a la(s) regla(s) concreta(s) que genera(n) el
+#     falso positivo (targetRules). Nunca allowlists globales sin targetRules.
+#   - Cada patrón documenta qué falso positivo cubre y por qué es seguro.
+#   - Ante la duda, NO silenciar. Para un falso positivo puntual que no
+#     generaliza a una regla, usar .gitleaksignore (por fingerprint) en el
+#     repo consumidor, no este archivo.
+#   - Todo cambio a este archivo pasa por PR con revisión de Ciberseguridad.
+# ═══════════════════════════════════════════════════════════════════════════
+
+title = "pipelines-centrales — Gitleaks central config"
+
+[extend]
+# Hereda las ~200 reglas por defecto de Gitleaks. Este archivo solo añade
+# allowlists acotadas; no desactiva ni reemplaza reglas.
+useDefault = true
+
+
+# ───────────────────────────────────────────────────────────────────────────
+# FP-01 · GUID usado como clave de configuración (.NET)
+#
+# Falso positivo: tablas de configuración cuya columna `Key` es un GUID que
+# identifica el registro (banderas, plantillas de email). En seeds / JSON
+# aparece como  Key = "<guid>"  o  "Key": "<guid>"  y la regla genérica
+# `generic-api-key` lo marca porque el nombre contiene "key" y el GUID
+# supera el umbral de entropía. No es una credencial y no se rota.
+# Origen: análisis Atenea (backend .NET).
+#
+# Por qué es seguro:
+#   - Solo aplica a `generic-api-key`. Las reglas específicas (AWS, Azure,
+#     GitHub, JWT, etc.) siguen evaluando el mismo texto.
+#   - regexTarget = "match": se evalúa el match COMPLETO (nombre + valor),
+#     anclado con ^...$. El nombre debe ser EXACTAMENTE una de las variantes
+#     listadas. NO cubre ApiKey, SecretKey, AccessKey, SubscriptionKey,
+#     LicenseKey, PrivateKey, x.Key, etc. — hay proveedores (p. ej. Heroku)
+#     cuya API key real tiene formato GUID, y esos deben seguir alertando.
+#   - El valor debe ser un GUID canónico completo (8-4-4-4-12 hex) sin
+#     nada más.
+#
+# Riesgo residual aceptado: una variable llamada literalmente `Key` cuyo
+# valor sea un GUID usado como credencial. Mitigación: las demás reglas y el
+# triage humano (ver README › Triage de hallazgos).
+# ───────────────────────────────────────────────────────────────────────────
+[[allowlists]]
+description = "FP-01: GUID como clave de configuración (Key/ConfigKey = <guid>)"
+targetRules = ["generic-api-key"]
+regexTarget = "match"
+regexes = [
+  '''^(?:Key|ConfigKey|ConfigurationKey|configKey|configurationKey|config_key|configuration_key)["'\x60]?\s*(?:=|:|,|=>)\s*["'\x60]?[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}["'\x60;\s]*$''',
+]
+
+
+# ───────────────────────────────────────────────────────────────────────────
+# FP-02 · JWT dentro de archivos de log versionados
+#
+# Falso positivo: archivos de log commiteados por error (p. ej. rolling files
+# de Serilog: log20240115.txt, log-20240115_001.txt) que contienen tokens
+# JWT de sesiones ya expiradas. Es un problema de higiene (los logs no deben
+# versionarse) y no una fuga de credenciales; inflaba el conteo (1.828 JWT
+# en Agendamiento).
+#
+# Por qué es seguro:
+#   - Solo aplica a la regla `jwt`. Una AWS key, connection string, API key,
+#     llave privada, etc. dentro de un log SÍ se sigue reportando: eso es
+#     una fuga real (el log filtró un secreto).
+#   - Los paths son específicos de logs. NO se usa `.*log.*\.txt$` porque
+#     también silenciaría login.txt, catalog.txt, changelog.txt, dialog.txt…
+#
+# Riesgo residual aceptado: un JWT de larga vida (token de servicio, refresh
+# token sin expiración) escrito en un log. Mitigación: la remediación correcta
+# sigue siendo sacar los logs del repo (.gitignore) — ver README.
+# ───────────────────────────────────────────────────────────────────────────
+[[allowlists]]
+description = "FP-02: JWT en archivos de log versionados (higiene, no fuga)"
+targetRules = ["jwt"]
+paths = [
+  # Rolling files de Serilog / NLog: log20240115.txt, log-2024011510.txt, log_20240115_001.txt
+  '''(?i)(?:^|/)log[-_]?\d{6,10}(?:_\d{3})?\.txt$''',
+  # Cualquier .txt / .log directamente dentro de un directorio log/ o logs/
+  '''(?i)(?:^|/)logs?/[^/]+\.(?:txt|log)$''',
+  # Extensión .log y rotaciones numeradas: app.log, app.log.1
+  '''(?i)\.log(?:\.\d+)?$''',
+]

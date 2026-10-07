@@ -30,6 +30,15 @@
 /report-templates/                  @juanmoya-bit
 
 # ─────────────────────────────────────────────────────────────────────────
+# Allowlist central de Gitleaks — decisión de seguridad, no de estilo
+# Se aplica a TODOS los repos consumidores al mergear a main. Cada excepción
+# nueva requiere justificación (ver README › Gitleaks › Política de allowlist).
+# Debe ser revisada por el equipo de Ciberseguridad (TODO: team oficial).
+# ─────────────────────────────────────────────────────────────────────────
+/config/gitleaks.toml               @juanmoya-bit
+/scripts/gitleaks_compose_config.py @juanmoya-bit
+
+# ─────────────────────────────────────────────────────────────────────────
 # Configuración del repo — review especialmente cuidadoso
 # ─────────────────────────────────────────────────────────────────────────
 /.github/CODEOWNERS                 @juanmoya-bit
