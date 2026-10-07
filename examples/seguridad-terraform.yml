@@ -13,10 +13,9 @@
 #   1. pipelines-centrales con visibility = Internal
 #   2. Allow reusable workflows en Settings → Actions
 #
-# ⚠ VERSIÓN: piloto de rediseño de plantillas PDF Template_SM_Ciber.
-#   Todos los refs apuntan a `feat/report-templates-sm-branding`. Cuando la
-#   rama se mergee a `main`, reemplazar globalmente por `@main` o el tag
-#   estable correspondiente.
+# Refs: todos los workflows centrales apuntan a @main (versión rolling).
+#   No apuntar nunca a ramas feature/fix: se borran tras el merge y el
+#   pipeline del repo consumidor deja de funcionar o usa código viejo.
 # ═══════════════════════════════════════════════════════════════════════════
 
 name: Seguridad IaC — Terraform
@@ -55,7 +54,7 @@ jobs:
   # ──────────────────────────────────────────────────────────────────────
   iac:
     name: "Terraform Full Analysis"
-    uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-iac-terraform.yml@feat/report-templates-sm-branding
+    uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-iac-terraform.yml@main
 
   # ══════════════════════════════════════════════════════════════════════
   # QUALITY GATE CONSOLIDADO — Aplica la tabla CVSSv3 al qg-summary de
@@ -80,7 +79,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: DevSecOpsSM/pipelines-centrales
-          ref: feat/report-templates-sm-branding
+          ref: main
           path: .pipelines-centrales
 
       - name: Descargar qg-summary de Terraform
@@ -202,7 +201,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: DevSecOpsSM/pipelines-centrales
-          ref: feat/report-templates-sm-branding
+          ref: main
           path: .pipelines-centrales
 
       - uses: actions/download-artifact@v4

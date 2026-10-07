@@ -12,10 +12,9 @@
 #   3. (Opcional) Secret organizacional NVD_API_KEY
 #   4. (Si usas SonarQube) Secret SONAR_TOKEN por-repo u organizacional
 #
-# ⚠ VERSIÓN: piloto de rediseño de plantillas PDF Template_SM_Ciber.
-#   Todos los refs apuntan a `feat/report-templates-sm-branding`. Cuando la
-#   rama se mergee a `main`, reemplazar globalmente por `@main` o el tag
-#   estable correspondiente.
+# Refs: todos los workflows centrales apuntan a @main (versión rolling).
+#   No apuntar nunca a ramas feature/fix: se borran tras el merge y el
+#   pipeline del repo consumidor deja de funcionar o usa código viejo.
 # ═══════════════════════════════════════════════════════════════════════════
 
 name: Seguridad SSDLC
@@ -49,21 +48,21 @@ jobs:
   # ──────────────────────────────────────────────────────────────────────
   hooks:
     name: "Etapa 1 · Pre-commit Hooks"
-    uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-hooks.yml@feat/report-templates-sm-branding
+    uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-hooks.yml@main
 
   # ──────────────────────────────────────────────────────────────────────
   # ETAPA 2 — Detección de secretos (Gitleaks)
   # ──────────────────────────────────────────────────────────────────────
   secretos:
     name: "Etapa 2 · Secrets Scan"
-    uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-secrets.yml@feat/report-templates-sm-branding
+    uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-secrets.yml@main
 
   # ──────────────────────────────────────────────────────────────────────
   # ETAPA 3 — SAST: Análisis estático (Semgrep OWASP Top 10)
   # ──────────────────────────────────────────────────────────────────────
   sast:
     name: "Etapa 3 · SAST (Semgrep)"
-    uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-sast.yml@feat/report-templates-sm-branding
+    uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-sast.yml@main
 
   # ──────────────────────────────────────────────────────────────────────
   # ETAPA 4 — SCA: Análisis de dependencias (OWASP Dependency-Check)
@@ -73,7 +72,7 @@ jobs:
   # ──────────────────────────────────────────────────────────────────────
   # sca:
   #   name: "Etapa 4 · SCA (Dependency-Check)"
-  #   uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-sca.yml@feat/report-templates-sm-branding
+  #   uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-sca.yml@main
   #   secrets:
   #     NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
 
@@ -84,14 +83,14 @@ jobs:
   # ──────────────────────────────────────────────────────────────────────
   iac:
     name: "Etapa 5 · IaC Terraform Full"
-    uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-iac-terraform.yml@v1.0.0
+    uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-iac-terraform.yml@main
 
   # ──────────────────────────────────────────────────────────────────────
   # ETAPA 6 — Seguridad de contenedores (KICS + Hadolint + Trivy)
   # ──────────────────────────────────────────────────────────────────────
   contenedores:
     name: "Etapa 6 · Container Security"
-    uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-containers.yml@feat/report-templates-sm-branding
+    uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-containers.yml@main
 
   # ──────────────────────────────────────────────────────────────────────
   # ETAPA 7 — SAST (SonarQube en instancia)
@@ -104,7 +103,7 @@ jobs:
   # ──────────────────────────────────────────────────────────────────────
   sonarqube:
     name: "Etapa 7 · SonarQube (SAST)"
-    uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-sonarqube.yml@feat/report-templates-sm-branding
+    uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-sonarqube.yml@main
     with:
       sonar-host-url: "http://localhost:9095"
       skip-tests:     true
@@ -141,7 +140,7 @@ jobs:
     # ↑ mismas dependencias que quality-gate-consolidated (paralelismo).
     #   Reactivar `sca` aquí también cuando se descomente el job sca arriba.
     if: always()
-    uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-defectdojo-upload.yml@feat/report-templates-sm-branding
+    uses: DevSecOpsSM/pipelines-centrales/.github/workflows/sec-defectdojo-upload.yml@main
     with:
       defectdojo-url: "https://defectdojo.miempresa.internal"
       # runner-label: "self-hosted"          # default; override si necesitas otro
@@ -173,7 +172,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: DevSecOpsSM/pipelines-centrales
-          ref: feat/report-templates-sm-branding
+          ref: main
           path: .pipelines-centrales
 
       - name: Descargar qg-summaries de todas las etapas
@@ -292,7 +291,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: DevSecOpsSM/pipelines-centrales
-          ref: feat/report-templates-sm-branding
+          ref: main
           path: .pipelines-centrales
 
       - uses: actions/download-artifact@v4
