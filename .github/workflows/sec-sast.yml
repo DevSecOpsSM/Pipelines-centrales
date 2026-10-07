@@ -12,6 +12,12 @@
 #
 # Modo Auditoría: continue-on-error en el scan. La decisión final la toma el
 # consolidador en el `seguridad.yml` del repo consumidor.
+#
+# Autorización por middleware (.NET): si el repo declara su middleware en
+# .security/authz.yml y el pipeline verifica que está registrado, los
+# hallazgos `missing-or-broken-authorization` de ese proyecto se reportan
+# como "cubiertos por middleware" y no suman al gate. Fail-closed.
+# Ver scripts/semgrep_authz.py y README › Semgrep.
 # ═══════════════════════════════════════════════════════════════════════════
 
 name: Security - SAST (Semgrep)
@@ -32,6 +38,20 @@ jobs:
 
       - name: Crear directorio de reportes
         run: mkdir -p "reports/${{ github.event.repository.name }}"
+
+      # Script de verificación de autorización por middleware (Opción D).
+      # Sparse checkout del repo central, ref fijo `main` (los reusable
+      # workflows no exponen su propio ref). Si falla, el step de verificación
+      # cae a fail-closed: ningún hallazgo se reclasifica.
+      - name: Checkout scripts centrales (autorización por middleware)
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          repository: DevSecOpsSM/pipelines-centrales
+          ref: main
+          path: .pipelines-centrales
+          sparse-checkout: scripts/semgrep_authz.py
+          sparse-checkout-cone-mode: false
 
       - name: Instalar Semgrep
         run: pip install semgrep --quiet
@@ -80,6 +100,38 @@ jobs:
             echo '{"results":[],"errors":[],"version":"0"}' > reports/semgrep-raw.json
           fi
 
+      # ────────────────────────────────────────────────────────────────────
+      # Autorización por middleware — declarar y verificar (Opción D)
+      #
+      # Si el repo declara su middleware en .security/authz.yml, se verifica
+      # con Semgrep que está registrado antes de MapControllers()/UseEndpoints().
+      # Solo si verifica, los hallazgos `missing-or-broken-authorization` de ese
+      # proyecto se marcan "cubiertos por middleware": siguen en el reporte pero
+      # no suman al quality gate. Fail-closed en cualquier otro caso.
+      # Detalle y esquema: scripts/semgrep_authz.py · README › Semgrep.
+      # ────────────────────────────────────────────────────────────────────
+      - name: Verificar autorización por middleware (.security/authz.yml)
+        if: always()
+        continue-on-error: true
+        run: |
+          SCRIPT=.pipelines-centrales/scripts/semgrep_authz.py
+          if [ ! -f "$SCRIPT" ]; then
+            if [ -f .security/authz.yml ]; then
+              echo "::warning title=Autorización por middleware NO aplicada::Script central no disponible. Los hallazgos de autorización cuentan normal."
+            fi
+            echo '{"schema_version":"1.0","status":"error","message":"Script central no disponible","covered_findings":[],"allow_anonymous":[]}' > reports/semgrep-authz.json
+            exit 0
+          fi
+          pip install pyyaml --quiet
+          # Mismas exclusiones que el scan principal (mantener alineadas)
+          python3 "$SCRIPT" \
+            --declaration .security/authz.yml \
+            --semgrep-raw reports/semgrep-raw.json \
+            --output reports/semgrep-authz.json \
+            --exclude=.github --exclude=.git --exclude=.pipelines-centrales \
+            --exclude=node_modules --exclude=vendor --exclude=.venv --exclude=venv \
+            --exclude=dist --exclude=build --exclude=target --exclude=reports
+
       - name: Generar reporte HTML
         if: always()
         env:
@@ -106,6 +158,18 @@ jobs:
                 errors  = data.get("errors", [])
             except Exception:
                 pass
+
+            # Autorización por middleware (semgrep_authz.py): separar cubiertos
+            authz = {}
+            try:
+                authz = json.load(open("reports/semgrep-authz.json", encoding="utf-8"))
+            except Exception:
+                pass
+            covered_keys = {(f.get("check_id"), f.get("path"), f.get("line")) for f in authz.get("covered_findings", [])}
+            def _key(r):
+                return (r.get("check_id"), r.get("path"), r.get("start", {}).get("line"))
+            covered_results = [r for r in results if _key(r) in covered_keys]
+            results         = [r for r in results if _key(r) not in covered_keys]
 
             def translate_es(text):
                 if not text or len(str(text).strip()) < 5:
@@ -160,6 +224,52 @@ jobs:
                   <td class="col-file file-path">{filepath}:{line_s}</td>
                   <td class="col-desc">{msg}{owasp_ref}</td>
                 </tr>\n"""
+
+            # Sección: autorización por middleware (solo si el repo la declaró)
+            authz_block = ""
+            authz_status = authz.get("status", "not_declared")
+            if authz_status != "not_declared":
+                color = "#4EDA56" if authz_status == "verified" else ("#FAD900" if authz_status == "partial" else "#F63D3D")
+                status_txt = {
+                    "verified":     "VERIFICADO",
+                    "partial":      "PARCIAL",
+                    "not_verified": "NO VERIFICADO — los hallazgos cuentan normal",
+                    "invalid":      "DECLARACIÓN INVÁLIDA — los hallazgos cuentan normal",
+                    "error":        "ERROR — los hallazgos cuentan normal",
+                }.get(authz_status, authz_status)
+                regs = "".join(
+                    f'<li><code>{html.escape(g.get("middleware", ""))}</code> en <span class="file-path">{html.escape(g.get("path", ""))}:{g.get("line", "?")}</span></li>'
+                    for g in authz.get("registrations", [])
+                ) or "<li>Ningún registro verificado</li>"
+                cov_rows = "".join(
+                    f'<tr><td class="col-rule"><code class="rule">{html.escape(r.get("check_id", "").split(".")[-1])}</code></td>'
+                    f'<td class="file-path" colspan="3">{html.escape(r.get("path", "?"))}:{r.get("start", {}).get("line", "?")}</td></tr>'
+                    for r in covered_results
+                )
+                anon_rows = "".join(
+                    f'<tr><td class="col-rule"><code class="rule">AllowAnonymous</code></td>'
+                    f'<td class="file-path" colspan="3">{html.escape(a.get("path", "?"))}:{a.get("line", "?")}</td></tr>'
+                    for a in authz.get("allow_anonymous", [])
+                )
+                cov_table = f'<table><tbody>{cov_rows}</tbody></table>' if cov_rows else '<p style="padding:14px 16px;color:#B0B0B0">Ninguno</p>'
+                anon_table = f'<table><tbody>{anon_rows}</tbody></table>' if anon_rows else '<p style="padding:14px 16px;color:#B0B0B0">Ninguno</p>'
+                authz_block = f"""
+                <div class="section">
+                  <div class="section-title">Autorización por middleware (.security/authz.yml)</div>
+                  <div class="wrap" style="padding:16px;border-left:4px solid {color}">
+                    <p><strong style="color:{color}">{html.escape(status_txt)}</strong></p>
+                    <p style="font-size:13px;color:#B0B0B0;margin-top:6px">{html.escape(authz.get("message", ""))}</p>
+                    <ul style="font-size:13px;margin:10px 0 0 20px;line-height:1.8">{regs}</ul>
+                  </div>
+                </div>
+                <div class="section">
+                  <div class="section-title">Cubiertos por middleware — no suman al quality gate ({len(covered_results)})</div>
+                  <div class="wrap">{cov_table}</div>
+                </div>
+                <div class="section">
+                  <div class="section-title">Inventario [AllowAnonymous] — superficie expuesta, revisar que sea intencional ({len(authz.get("allow_anonymous", []))})</div>
+                  <div class="wrap">{anon_table}</div>
+                </div>"""
 
             error_block = ""
             if errors:
@@ -300,6 +410,7 @@ jobs:
                 <div class="section-title">Hallazgos — Semgrep SAST</div>
                 <div class="wrap">{table}{no_findings}</div>
               </div>
+              {authz_block}
               {error_block}
               <div class="footer">Generado por <strong>pipelines-centrales</strong> · Equipo Cybersecurity · Simon · {fecha}</div>
             </body>
@@ -340,6 +451,21 @@ jobs:
                 results = data.get("results", [])
             except Exception:
                 pass
+
+            # Autorización por middleware: los hallazgos cubiertos (verificados
+            # por semgrep_authz.py) NO suman al quality gate. Sin el archivo o
+            # con estado distinto de verified/partial, covered_findings viene
+            # vacío → fail-closed, todo cuenta.
+            authz = {}
+            try:
+                authz = json.load(open("reports/semgrep-authz.json", encoding="utf-8"))
+            except Exception:
+                pass
+            covered_keys = {(f.get("check_id"), f.get("path"), f.get("line")) for f in authz.get("covered_findings", [])}
+            n_before = len(results)
+            results = [r for r in results
+                       if (r.get("check_id"), r.get("path"), r.get("start", {}).get("line")) not in covered_keys]
+            n_covered = n_before - len(results)
 
             # Mapeo Semgrep → CVSSv3
             SEV_MAP = {"ERROR": "high", "WARNING": "medium", "INFO": "low"}
@@ -389,12 +515,19 @@ jobs:
                 "top_findings":           top,
                 "workflow_blocked":       blocked,
                 "block_reason":           reason,
+                # Informativo (el consolidador no lo usa para el gate)
+                "authz_middleware": {
+                    "status":                authz.get("status", "not_declared"),
+                    "covered_findings":      n_covered,
+                    "allow_anonymous_count": len(authz.get("allow_anonymous", [])),
+                },
             }
 
             out_path = f"reports/{repo_name}/qg-summary-sec-sast.json"
             with open(out_path, "w", encoding="utf-8") as fh:
                 json.dump(summary, fh, indent=2, ensure_ascii=False)
-            print(f"[qg-summary] sec-sast → {counts} blocked={blocked}")
+            print(f"[qg-summary] sec-sast → {counts} blocked={blocked} "
+                  f"authz={summary['authz_middleware']['status']} cubiertos={n_covered}")
         run: python3 -c "$PYTHON_SCRIPT"
 
       - name: Subir reporte HTML + JSON raw
@@ -405,6 +538,7 @@ jobs:
           path: |
             reports/${{ github.event.repository.name }}/semgrep-report.html
             reports/semgrep-raw.json
+            reports/semgrep-authz.json
           retention-days: 30
           if-no-files-found: warn
 

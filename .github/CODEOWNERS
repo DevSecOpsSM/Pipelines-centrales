@@ -38,6 +38,10 @@
 /config/gitleaks.toml               @juanmoya-bit
 /scripts/gitleaks_compose_config.py @juanmoya-bit
 
+# Verificación de autorización por middleware (Semgrep, Opción D): decide qué
+# hallazgos de autorización dejan de sumar al quality gate en toda la org.
+/scripts/semgrep_authz.py           @juanmoya-bit
+
 # ─────────────────────────────────────────────────────────────────────────
 # Configuración del repo — review especialmente cuidadoso
 # ─────────────────────────────────────────────────────────────────────────
